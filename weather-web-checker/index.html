@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polymarket Weather Checker</title>
+  <meta name="description" content="Compare ECMWF and GFS-GraphCast forecasts against Polymarket weather temperature markets to find edges.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header>
+    <div class="container">
+      <span class="header-icon">🌤</span>
+      <div class="header-text">
+        <h1>Polymarket Weather Checker</h1>
+        <p>ECMWF IFS &amp; GFS-GraphCast forecasts vs Polymarket temperature markets</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="city">By City &amp; Date</button>
+      <button class="tab-btn" data-tab="url">By Polymarket URL</button>
+    </div>
+
+    <!-- Tab 1: City + Date -->
+    <div id="tab-city" class="tab-pane active">
+      <form id="form-city" autocomplete="off">
+        <div class="form-grid">
+          <div class="form-field">
+            <label for="city">City or location</label>
+            <input
+              type="text"
+              id="city"
+              placeholder="e.g. Tel Aviv, Los Angeles, Chicago O'Hare"
+              required
+              autocomplete="off"
+            >
+          </div>
+          <div class="form-field">
+            <label for="date">Date</label>
+            <input type="date" id="date" required>
+          </div>
+          <button type="submit" class="btn-primary">Get Forecast &amp; Compare</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Tab 2: Polymarket URL -->
+    <div id="tab-url" class="tab-pane">
+      <form id="form-url" autocomplete="off">
+        <div class="form-url-row">
+          <div class="form-field">
+            <label for="poly-url">Polymarket event URL</label>
+            <input
+              type="url"
+              id="poly-url"
+              placeholder="https://polymarket.com/event/los-angeles-temperature-june-5-2026"
+              required
+              autocomplete="off"
+            >
+          </div>
+          <button type="submit" class="btn-primary">Analyze Market</button>
+        </div>
+      </form>
+    </div>
+
+    <div id="results"></div>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
