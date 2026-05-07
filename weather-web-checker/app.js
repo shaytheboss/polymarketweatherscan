@@ -10,9 +10,30 @@ const API = {
   polymarket: 'https://gamma-api.polymarket.com',
 };
 
-const POLY_HEADERS = {
-  'Accept': 'application/json',
-};
+// Public CORS proxy fallbacks — used only if direct fetch fails
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+];
+
+async function fetchWithCorsFallback(url) {
+  // 1. Try direct (Polymarket Gamma generally allows CORS)
+  try {
+    const resp = await fetch(url);
+    if (resp.ok) return resp;
+    throw new Error(`HTTP ${resp.status}`);
+  } catch (directErr) {
+    // 2. Try proxies in order
+    for (const buildProxyUrl of CORS_PROXIES) {
+      try {
+        const proxyUrl = buildProxyUrl(url.toString());
+        const resp = await fetch(proxyUrl);
+        if (resp.ok) return resp;
+      } catch (_) { /* try next */ }
+    }
+    throw new Error(`Polymarket fetch failed (direct + proxies): ${directErr.message}`);
+  }
+}
 
 // Model definitions. fallback is tried if primary fails.
 const MODELS = [
@@ -297,20 +318,24 @@ async function fetchModelWithFallback(lat, lon, dateStr, model) {
     model.fallback
       ? { id: model.fallback, label: model.fallbackLabel, desc: model.fallbackDesc }
       : null,
+    // last-resort: any model (Open-Meteo's default best forecast)
+    { id: 'best_match', label: model.label + ' (best_match)', desc: model.desc },
   ].filter(Boolean);
 
+  const errors = [];
   for (const attempt of attempts) {
     try {
       const f = await fetchSingleModel(lat, lon, dateStr, attempt.id);
       return { ...f, usedId: attempt.id, label: attempt.label, desc: attempt.desc, color: model.color };
     } catch (e) {
+      errors.push(`[${attempt.id}] ${e.message}`);
       console.warn(`[${attempt.id}] ${e.message}`);
     }
   }
   return {
     maxC: null, minC: null, maxF: null, minF: null,
     usedId: model.id, label: model.label, desc: model.desc, color: model.color,
-    error: `All attempts failed for ${model.label}`,
+    error: errors.join(' | ') || `All attempts failed for ${model.label}`,
   };
 }
 
@@ -377,8 +402,7 @@ async function searchPolymarketByCity(cityName) {
   url.searchParams.set('closed', 'false');
   url.searchParams.set('limit', '50');
 
-  const resp = await fetch(url, { headers: POLY_HEADERS });
-  if (!resp.ok) throw new Error(`Polymarket search: HTTP ${resp.status}`);
+  const resp = await fetchWithCorsFallback(url);
   const data = await resp.json();
   const events = Array.isArray(data) ? data : (data.data || []);
 
@@ -395,8 +419,7 @@ async function fetchPolymarketBySlug(slug) {
   url.searchParams.set('slug', slug);
   url.searchParams.set('limit', '1');
 
-  const resp = await fetch(url, { headers: POLY_HEADERS });
-  if (!resp.ok) throw new Error(`Polymarket event lookup: HTTP ${resp.status}`);
+  const resp = await fetchWithCorsFallback(url);
   const data = await resp.json();
   const events = Array.isArray(data) ? data : (data.data || []);
   if (!events.length) throw new Error(`No Polymarket event found for slug: "${slug}"`);
