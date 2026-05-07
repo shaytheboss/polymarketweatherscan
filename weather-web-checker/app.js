@@ -467,7 +467,10 @@ async function analyzeByCity(cityInput, dateStr) {
   const location = await geocodeCity(cityInput);
   const [modelResults, markets] = await Promise.all([
     Promise.all(MODELS.map(m => fetchModelWithFallback(location.lat, location.lon, dateStr, m))),
-    searchPolymarketByCity(location.name).catch(e => { console.warn('Polymarket search failed:', e.message); return []; }),
+    searchPolymarketByCity(location.name).catch(e => {
+      console.warn('Polymarket search failed:', e.message);
+      return [{ _error: e.message }];
+    }),
   ]);
   return buildAnalysis(location, dateStr, modelResults, markets);
 }
@@ -493,8 +496,9 @@ async function analyzeByUrl(rawUrl) {
   if (!city) throw new Error(`Could not extract city from market question: "${markets[0].question}". Use the "By City" tab instead.`);
   if (!dateStr) throw new Error(`Could not extract date from market question: "${markets[0].question}". Use the "By City" tab instead.`);
 
-  validateDate(dateStr);
   const location = await geocodeCity(city);
+  // Date might be far in the future (Polymarket markets can be months ahead).
+  // Attempt forecast anyway; Open-Meteo will return an error if out of range.
   const modelResults = await Promise.all(
     MODELS.map(m => fetchModelWithFallback(location.lat, location.lon, dateStr, m))
   );
@@ -598,17 +602,27 @@ function renderForecastCard(models, consensusC, consensusF) {
 }
 
 function renderMarketsCard(markets, models) {
-  if (!markets.length) {
+  const fetchError = markets.length === 1 && markets[0]._error ? markets[0]._error : null;
+  const realMarkets = markets.filter(m => !m._error);
+
+  if (fetchError) {
+    return `
+      <div class="card">
+        <div class="card-label">Polymarket Weather Markets</div>
+        <p class="no-data" style="color:#e3b341">⚠ Polymarket search failed (CORS / network): ${esc(fetchError)}<br>
+        Use the <strong>"By Polymarket URL"</strong> tab and paste the market URL directly — that bypasses the search limitation.</p>
+      </div>`;
+  }
+  if (!realMarkets.length) {
     return `
       <div class="card">
         <div class="card-label">Polymarket Weather Markets</div>
         <p class="no-data">No temperature markets found for this city.<br>
-        Try searching Polymarket directly for the city name, or paste the market URL in the second tab.</p>
+        Try the <strong>"By Polymarket URL"</strong> tab and paste the market URL directly.</p>
       </div>`;
   }
-
   // Sort: largest absolute edge first
-  const sorted = [...markets].sort((a, b) => Math.abs(b.edge ?? 0) - Math.abs(a.edge ?? 0));
+  const sorted = [...realMarkets].sort((a, b) => Math.abs(b.edge ?? 0) - Math.abs(a.edge ?? 0));
 
   const rows = sorted.map(m => {
     const perModelHtml = m.perModelProbs && m.perModelProbs.length
@@ -635,7 +649,7 @@ function renderMarketsCard(markets, models) {
 
   return `
     <div class="card">
-      <div class="card-label">Polymarket Weather Markets (${markets.length})</div>
+      <div class="card-label">Polymarket Weather Markets (${realMarkets.length})</div>
       <div class="legend">
         <span class="edge-strong-yes">≥ +10pp → strong BUY YES</span>
         <span class="edge-mild-yes">+5–10pp → mild BUY YES</span>
