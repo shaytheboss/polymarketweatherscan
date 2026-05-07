@@ -46,12 +46,12 @@ const MODELS = [
   },
   {
     key: 'graphcast',
-    id: 'gfs_graphcast',
+    id: 'gfs_graphcast025',
     label: 'GFS-GraphCast',
-    desc: 'NOAA × Google DeepMind AI model',
+    desc: 'NOAA × Google DeepMind AI model (0.25°, 10-day)',
     fallback: 'ecmwf_aifs025_single',
-    fallbackLabel: 'ECMWF AIFS (GraphCast-style)',
-    fallbackDesc: 'ECMWF AI model — graph neural network, similar to GraphCast',
+    fallbackLabel: 'ECMWF AIFS',
+    fallbackDesc: 'ECMWF AI model — graph neural network',
     color: '#f1c40f',
   },
 ];
