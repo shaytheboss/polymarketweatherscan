@@ -12,9 +12,6 @@ const API = {
 
 const POLY_HEADERS = {
   'Accept': 'application/json',
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  'Referer': 'https://polymarket.com/',
-  'Origin': 'https://polymarket.com',
 };
 
 // Model definitions. fallback is tried if primary fails.
@@ -262,7 +259,6 @@ async function fetchSingleModel(lat, lon, dateStr, modelId) {
     models: modelId,
     start_date: dateStr,
     end_date: dateStr,
-    forecast_days: 16,
   };
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
 
