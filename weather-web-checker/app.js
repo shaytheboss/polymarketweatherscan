@@ -180,13 +180,33 @@ function parseDateFromQuestion(question) {
 
   let year = m[3] ? parseInt(m[3], 10) : null;
   if (!year) {
-    // Pick next occurrence of this month/day
+    // Pick next occurrence of this month/day. Compare dates only (no time)
+    // so "today" doesn't get bumped to next year.
     const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     year = now.getFullYear();
     const candidate = new Date(year, month - 1, day);
-    if (candidate < now) year++;
+    if (candidate < today) year++;
   }
 
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+/**
+ * Extract date from a Polymarket slug like "...-on-may-7-2026".
+ * Returns YYYY-MM-DD or null.
+ */
+function parseDateFromSlug(slug) {
+  if (!slug) return null;
+  const s = slug.toLowerCase();
+  // Pattern: month-day-year, e.g. "may-7-2026" or "may-7th-2026"
+  const m = s.match(/(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)-(\d{1,2})(?:st|nd|rd|th)?-(\d{4})/);
+  if (!m) return null;
+  const month = MONTHS[m[1]];
+  if (!month) return null;
+  const day = parseInt(m[2], 10);
+  const year = parseInt(m[3], 10);
+  if (day < 1 || day > 31 || year < 2020 || year > 2099) return null;
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
@@ -493,6 +513,15 @@ async function analyzeByUrl(rawUrl) {
     if (city && dateStr) break;
   }
 
+  // Fallback: extract date from the slug itself (e.g. "...-on-may-7-2026")
+  if (!dateStr) dateStr = parseDateFromSlug(slug);
+  // Fix year-mismatch: if the slug has an explicit year and it differs from
+  // what was parsed from the question, trust the slug.
+  const slugDate = parseDateFromSlug(slug);
+  if (slugDate && dateStr && slugDate.slice(0, 4) !== dateStr.slice(0, 4)) {
+    dateStr = slugDate;
+  }
+
   if (!city) throw new Error(`Could not extract city from market question: "${markets[0].question}". Use the "By City" tab instead.`);
   if (!dateStr) throw new Error(`Could not extract date from market question: "${markets[0].question}". Use the "By City" tab instead.`);
 
@@ -508,12 +537,16 @@ async function analyzeByUrl(rawUrl) {
 function validateDate(dateStr) {
   const d = new Date(dateStr + 'T12:00:00Z');
   if (isNaN(d.getTime())) throw new Error(`Invalid date: ${dateStr}`);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (d < today) throw new Error('Date is in the past. Open-Meteo only provides forecasts for future dates.');
-  const maxDate = new Date(today);
-  maxDate.setDate(maxDate.getDate() + 15);
-  if (d > maxDate) throw new Error('Date is more than 15 days ahead. Open-Meteo forecast horizon is ~16 days.');
+  // Allow 1 day tolerance for timezone differences (e.g. user in Israel
+  // checking a date that's still "today" in the US).
+  const yesterday = new Date();
+  yesterday.setHours(0, 0, 0, 0);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d < yesterday) throw new Error('Date is in the past. Open-Meteo only provides forecasts for future dates.');
+  const maxDate = new Date();
+  maxDate.setHours(0, 0, 0, 0);
+  maxDate.setDate(maxDate.getDate() + 16);
+  if (d > maxDate) throw new Error('Date is more than 16 days ahead. Open-Meteo forecast horizon is ~16 days.');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -717,11 +750,14 @@ function setLoading(form, loading) {
 
 function initDateInput() {
   const input = document.getElementById('date');
-  const today = new Date().toISOString().slice(0, 10);
-  const max = new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10);
-  input.value = today;
-  input.min = today;
-  input.max = max;
+  // Use LOCAL date, not UTC, to avoid timezone issues
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const now = new Date();
+  const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+  const max = new Date(now); max.setDate(max.getDate() + 16);
+  input.value = fmt(now);
+  input.min = fmt(yesterday);
+  input.max = fmt(max);
 }
 
 function initTabs() {
