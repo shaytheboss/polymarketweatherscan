@@ -636,76 +636,120 @@ def render_forecast_table(model_results: list, date_str: str):
     return con_c
 
 
-def render_ensemble_section(pooled: list, by_model: dict, date_str: str):
-    """Show probability distribution: histogram per °F + quantiles + per-model spread."""
-    if not pooled:
-        st.warning("Ensemble forecasts unavailable. Falling back to deterministic models.")
-        for label, info in by_model.items():
-            if info.get("error"):
-                st.caption(f"⚠ {label}: {info['error'][:120]}")
-        return None
+def compute_det_distribution(model_results: list) -> tuple:
+    """
+    Build synthetic probability distribution from deterministic models.
+    Uses a mixture of normals: one Gaussian per model, sigma estimated
+    from inter-model spread (σ = max(2.5°C, spread × 1.5)).
+    Returns (samples_c, sigma_c, source_label).
+    """
+    valid = [r for r in model_results if r.get("max_c") is not None]
+    if not valid:
+        return [], SIGMA, "no data"
 
-    q = empirical_quantiles(pooled)
+    vals = [r["max_c"] for r in valid]
+    spread = max(vals) - min(vals) if len(vals) > 1 else 0.0
+    sigma  = max(SIGMA, spread * 1.5)
 
-    st.markdown(f"**🎲 Probabilistic Forecast — Max Temperature on {date_str}**")
-    st.caption(
-        f"Pooled super-ensemble: **{q['n']} member runs** across "
-        f"{', '.join(label for label, info in by_model.items() if info.get('members'))}. "
-        "Each member is an independent perturbed run — the spread is the real uncertainty."
-    )
+    # 200 samples per model → smooth histogram
+    rng     = np.random.default_rng(42)
+    samples = np.concatenate([rng.normal(mu, sigma, 200) for mu in vals]).tolist()
+    src     = (f"mixture of {len(valid)} deterministic models "
+               f"(σ = {sigma:.1f}°C estimated from inter-model spread)")
+    return samples, sigma, src
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+
+def render_probability_section(date_str: str, model_results: list,
+                                pooled_ensemble: list, by_model: dict):
+    """
+    Always shows a probability distribution.
+    Priority: empirical ensemble (if ≥ 10 members) → synthetic from deterministic models.
+    """
+    from math import sqrt as _sqrt
+
+    st.markdown(f"**🎲 Probability Distribution — Max Temperature on {date_str}**")
+
+    # Choose data source
+    if len(pooled_ensemble) >= 10:
+        samples   = pooled_ensemble
+        valid_ens = [lbl for lbl, info in by_model.items() if info.get("members")]
+        source    = f"empirical ensemble ({len(samples)} members: {', '.join(valid_ens)})"
+        is_ens    = True
+    else:
+        samples, sigma_det, source = compute_det_distribution(model_results)
+        is_ens = False
+        if not samples:
+            st.warning("Cannot compute probability distribution — no forecast data available.")
+            return None
+
+    if not is_ens and by_model:
+        failed = [(lbl, info.get("error","?")) for lbl, info in by_model.items()
+                  if not info.get("members")]
+        if failed:
+            with st.expander("⚠ Ensemble API unavailable — using deterministic fallback"):
+                for lbl, err in failed:
+                    st.caption(f"**{lbl}**: {err[:150]}")
+                st.caption("Probability is estimated from model spread, not from actual ensemble runs.")
+
+    st.caption(f"Source: {source}")
+
+    q = empirical_quantiles(samples)
+
+    # Quantile metrics
     def fmt(c):
         return f"{c:.1f}°C / {c*9/5+32:.1f}°F"
-    with c1: st.metric("P10 (cool tail)",  fmt(q["p10"]))
-    with c2: st.metric("P25",              fmt(q["p25"]))
-    with c3: st.metric("P50 (median)",     fmt(q["p50"]))
-    with c4: st.metric("P75",              fmt(q["p75"]))
-    with c5: st.metric("P90 (hot tail)",   fmt(q["p90"]))
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1: st.metric("P10 (cool)",   fmt(q["p10"]))
+    with c2: st.metric("P25",          fmt(q["p25"]))
+    with c3: st.metric("P50 (median)", fmt(q["p50"]))
+    with c4: st.metric("P75",          fmt(q["p75"]))
+    with c5: st.metric("P90 (hot)",    fmt(q["p90"]))
 
     st.caption(
         f"Mean: **{fmt(q['mean'])}**  ·  "
-        f"Std (real uncertainty): **{q['std']:.2f}°C**  ·  "
-        f"Range: {fmt(q['min'])} → {fmt(q['max'])}"
+        f"Spread (σ): **{q['std']:.2f}°C**  ·  "
+        f"Range shown: {fmt(q['min'])} → {fmt(q['max'])}"
     )
 
-    hist = degree_histogram_f(pooled)
+    # Histogram per integer °F
+    hist = degree_histogram_f(samples)
     if not hist.empty:
-        st.markdown("**Probability per integer °F bin** (this is what you asked for)")
+        st.markdown("**Probability per integer °F bin**")
         chart_df = hist.set_index("Max Temp (°F)")[["Probability"]]
-        st.bar_chart(chart_df, height=240)
+        st.bar_chart(chart_df, height=260)
+
+        # Annotated table with cumulative column
+        probs = hist["Probability"].tolist()
+        table = hist.copy()
+        table["Probability %"] = [f"{p*100:.1f}%" for p in probs]
+        table["Cumulative ≥"]  = [
+            f"{sum(probs[i:])*100:.1f}%"
+            for i in range(len(probs))
+        ]
+        table["Cumulative ≤"]  = [
+            f"{sum(probs[:i+1])*100:.1f}%"
+            for i in range(len(probs))
+        ]
         st.dataframe(
-            hist.assign(**{
-                "Probability": hist["Probability"].apply(lambda p: f"{p*100:.1f}%"),
-                "Cumulative ≥": [
-                    f"{sum(hist['Probability'].iloc[i:])*100:.1f}%"
-                    for i in range(len(hist))
-                ],
-            }).set_index("Max Temp (°F)"),
+            table.drop(columns=["Probability", "Members"]).set_index("Max Temp (°F)"),
             use_container_width=True,
-            height=min(400, 50 + 35 * len(hist)),
+            height=min(450, 55 + 35 * len(hist)),
         )
 
-    with st.expander("Per-model breakdown"):
-        rows = []
-        for label, info in by_model.items():
-            if info.get("members"):
-                rows.append({
-                    "Model":  label,
-                    "Members": info["n"],
-                    "Mean":   fmt(info["mean"]),
-                    "Std":    f"{info['std']:.2f}°C",
-                })
-            else:
-                rows.append({
-                    "Model":  label,
-                    "Members": 0,
-                    "Mean":   "—",
-                    "Std":    f"⚠ {info.get('error', 'no data')[:80]}",
-                })
-        st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
+    if is_ens:
+        with st.expander("Per ensemble model"):
+            rows = []
+            for label, info in by_model.items():
+                if info.get("members"):
+                    rows.append({"Model": label, "Members": info["n"],
+                                 "Mean": fmt(info["mean"]), "Std": f"{info['std']:.2f}°C"})
+                else:
+                    rows.append({"Model": label, "Members": 0, "Mean": "—",
+                                 "Std": f"⚠ {info.get('error','?')[:70]}"})
+            st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
 
-    return q
+    return samples
 
 
 def render_markets(markets: list):
@@ -775,14 +819,15 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
 
     render_forecast_table(model_results, date_str)
 
-    # Probabilistic ensemble forecast — the real probability distribution
+    # Probabilistic distribution — always shown; ensemble when available, det-model fallback otherwise
     pooled, by_model = [], {}
-    with st.spinner("Fetching ensemble forecasts (this is the probability distribution)…"):
+    with st.spinner("Fetching ensemble forecasts…"):
         try:
             pooled, by_model = fetch_super_ensemble(location["lat"], location["lon"], date_str)
         except Exception as e:
-            st.warning(f"Ensemble fetch failed: {e}")
-    render_ensemble_section(pooled, by_model, date_str)
+            st.caption(f"(Ensemble fetch outer error: {e})")
+
+    prob_samples = render_probability_section(date_str, model_results, pooled, by_model)
 
     # Markets
     if markets_override is not None:
@@ -797,7 +842,8 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
             except Exception as e:
                 st.warning(f"Polymarket search failed: {e}. Use the URL tab for direct lookup.")
 
-    enriched = enrich_markets(markets, model_results, pooled, by_model)
+    dist_members = pooled if len(pooled) >= 10 else (prob_samples or [])
+    enriched = enrich_markets(markets, model_results, dist_members, by_model)
     render_markets(enriched)
     return model_results
 
