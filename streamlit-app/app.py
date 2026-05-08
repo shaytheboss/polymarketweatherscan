@@ -16,8 +16,16 @@ import streamlit as st
 
 GEOCODE_URL  = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
+ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 POLYMARKET   = "https://gamma-api.polymarket.com"
-SIGMA        = 2.5   # °C day-ahead forecast uncertainty
+SIGMA        = 2.5   # °C day-ahead forecast uncertainty (fallback only)
+
+ENSEMBLE_MODELS = [
+    {"id": "ecmwf_ifs025",  "label": "ECMWF ENS",   "expected": 51},
+    {"id": "gfs025",        "label": "GEFS",        "expected": 31},
+    {"id": "icon_seamless", "label": "ICON-EPS",    "expected": 40},
+    {"id": "gem_global",    "label": "GEPS",        "expected": 21},
+]
 
 MODELS = [
     {
@@ -172,6 +180,129 @@ def fetch_forecast(lat: float, lon: float, date_str: str, model_id: str) -> dict
         "max_f": round(max_c * 9/5 + 32, 1),
         "min_f": round(min_c * 9/5 + 32, 1) if min_c is not None else None,
     }
+
+
+# ── Ensemble (probabilistic) forecast ─────────────────────────────────────────
+
+@st.cache_data(ttl=1800)
+def fetch_ensemble_members(lat: float, lon: float, date_str: str, model_id: str) -> list:
+    """
+    Returns list of daily-max temperatures (°C), one per ensemble member,
+    by taking the hourly max of each member across the target date's local hours.
+    Each ensemble member is a perturbed run of the same model, so the spread
+    of these numbers IS the actual probability distribution.
+    """
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "hourly": "temperature_2m",
+        "timezone": "auto",
+        "models": model_id,
+        "start_date": date_str,
+        "end_date": date_str,
+    }
+    r = requests.get(ENSEMBLE_URL, params=params, timeout=20)
+    if not r.ok:
+        raise ValueError(f"HTTP {r.status_code}: {r.text[:200]}")
+    data = r.json()
+    if data.get("error"):
+        raise ValueError(data.get("reason", "Unknown ensemble API error"))
+
+    hourly = data.get("hourly", {})
+    times  = hourly.get("time", [])
+    if not times:
+        raise ValueError("No ensemble hourly data returned")
+
+    target_idx = [i for i, t in enumerate(times) if t.startswith(date_str)]
+    if not target_idx:
+        raise ValueError(f"Date {date_str} not in ensemble window")
+
+    member_cols = [k for k in hourly.keys() if re.match(r'^temperature_2m_member\d+$', k)]
+    if not member_cols and "temperature_2m" in hourly:
+        member_cols = ["temperature_2m"]
+    if not member_cols:
+        raise ValueError("No ensemble members in response")
+
+    maxes = []
+    for col in member_cols:
+        vals = [hourly[col][i] for i in target_idx if hourly[col][i] is not None]
+        if vals:
+            maxes.append(max(vals))
+    if not maxes:
+        raise ValueError("All ensemble members were null")
+    return maxes
+
+
+def fetch_super_ensemble(lat: float, lon: float, date_str: str) -> tuple:
+    """Fetch members from every ensemble model; pool them into a super-ensemble."""
+    by_model = {}
+    pooled   = []
+    for model in ENSEMBLE_MODELS:
+        try:
+            members = fetch_ensemble_members(lat, lon, date_str, model["id"])
+            by_model[model["label"]] = {
+                "members": members,
+                "mean":    sum(members) / len(members),
+                "std":     float(np.std(members, ddof=1)) if len(members) > 1 else 0.0,
+                "n":       len(members),
+                "error":   None,
+            }
+            pooled.extend(members)
+        except Exception as e:
+            by_model[model["label"]] = {"members": [], "mean": None, "std": None,
+                                        "n": 0, "error": str(e)}
+    return pooled, by_model
+
+
+def empirical_bucket_prob(members: list, min_c, max_c) -> float | None:
+    if not members:
+        return None
+    n = len(members)
+    count = sum(
+        1 for m in members
+        if (min_c is None or m >= min_c) and (max_c is None or m <= max_c)
+    )
+    return count / n
+
+
+def empirical_quantiles(members: list) -> dict:
+    if not members:
+        return {}
+    s = sorted(members)
+    n = len(s)
+    def q(p):
+        idx = max(0, min(n - 1, int(p * n)))
+        return s[idx]
+    return {
+        "p10":  q(0.10),
+        "p25":  q(0.25),
+        "p50":  q(0.50),
+        "p75":  q(0.75),
+        "p90":  q(0.90),
+        "min":  s[0],
+        "max":  s[-1],
+        "mean": sum(s) / n,
+        "std":  float(np.std(s, ddof=1)) if n > 1 else 0.0,
+        "n":    n,
+    }
+
+
+def degree_histogram_f(members: list) -> pd.DataFrame:
+    """Probability mass per integer °F bin — exactly what the user asked for."""
+    if not members:
+        return pd.DataFrame()
+    members_f = [m * 9/5 + 32 for m in members]
+    rounded   = [round(f) for f in members_f]
+    n         = len(members_f)
+    counts    = {}
+    for r in rounded:
+        counts[r] = counts.get(r, 0) + 1
+    lo, hi = min(counts), max(counts)
+    rows = []
+    for t in range(lo, hi + 1):
+        c = counts.get(t, 0)
+        rows.append({"Max Temp (°F)": t, "Probability": c / n, "Members": c})
+    return pd.DataFrame(rows)
 
 
 def fetch_model_with_fallback(lat, lon, date_str, model) -> dict:
@@ -339,23 +470,53 @@ def parse_markets(events: list, city_filter: str | None = None) -> list:
     return results
 
 
-def enrich_markets(markets: list, model_results: list) -> list:
-    valid   = [r for r in model_results if r.get("max_c") is not None]
-    all_max = [r["max_c"] for r in valid]
-    enriched = []
+def enrich_markets(markets: list, model_results: list,
+                   ensemble_members: list | None = None,
+                   ensemble_by_model: dict | None = None) -> list:
+    """
+    Compute probability for each Polymarket bucket.
+    Priority:  empirical ensemble probability  >  normal approx around deterministic.
+    """
+    valid_det = [r for r in model_results if r.get("max_c") is not None]
+    det_max   = [r["max_c"] for r in valid_det]
+    enriched  = []
+
     for m in markets:
         bucket = m.get("bucket")
-        if not bucket or not all_max:
-            enriched.append({**m, "model_prob": None, "edge": None, "per_model": []})
+        if not bucket:
+            enriched.append({**m, "model_prob": None, "edge": None,
+                             "per_model": [], "method": "no-bucket"})
             continue
-        probs = [bucket_probability(fc, bucket.get("min_c"), bucket.get("max_c"))
-                 for fc in all_max]
-        model_prob = sum(probs) / len(probs)
+
+        if ensemble_members:
+            model_prob = empirical_bucket_prob(
+                ensemble_members, bucket.get("min_c"), bucket.get("max_c"))
+            method     = f"empirical ({len(ensemble_members)} ensemble members)"
+            per_model  = []
+            if ensemble_by_model:
+                for label, info in ensemble_by_model.items():
+                    if info.get("members"):
+                        p = empirical_bucket_prob(
+                            info["members"], bucket.get("min_c"), bucket.get("max_c"))
+                        if p is not None:
+                            per_model.append((label, p))
+        elif det_max:
+            probs      = [bucket_probability(fc, bucket.get("min_c"), bucket.get("max_c"))
+                          for fc in det_max]
+            model_prob = sum(probs) / len(probs)
+            method     = f"normal approx (σ={SIGMA}°C)"
+            per_model  = list(zip([r["label"] for r in valid_det], probs))
+        else:
+            enriched.append({**m, "model_prob": None, "edge": None,
+                             "per_model": [], "method": "no-data"})
+            continue
+
         enriched.append({
             **m,
             "model_prob": model_prob,
-            "edge":       model_prob - m["yes_price"],
-            "per_model":  list(zip([r["label"] for r in valid], probs)),
+            "edge":       (model_prob - m["yes_price"]) if model_prob is not None else None,
+            "per_model":  per_model,
+            "method":     method,
         })
     return enriched
 
@@ -475,6 +636,78 @@ def render_forecast_table(model_results: list, date_str: str):
     return con_c
 
 
+def render_ensemble_section(pooled: list, by_model: dict, date_str: str):
+    """Show probability distribution: histogram per °F + quantiles + per-model spread."""
+    if not pooled:
+        st.warning("Ensemble forecasts unavailable. Falling back to deterministic models.")
+        for label, info in by_model.items():
+            if info.get("error"):
+                st.caption(f"⚠ {label}: {info['error'][:120]}")
+        return None
+
+    q = empirical_quantiles(pooled)
+
+    st.markdown(f"**🎲 Probabilistic Forecast — Max Temperature on {date_str}**")
+    st.caption(
+        f"Pooled super-ensemble: **{q['n']} member runs** across "
+        f"{', '.join(label for label, info in by_model.items() if info.get('members'))}. "
+        "Each member is an independent perturbed run — the spread is the real uncertainty."
+    )
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    def fmt(c):
+        return f"{c:.1f}°C / {c*9/5+32:.1f}°F"
+    with c1: st.metric("P10 (cool tail)",  fmt(q["p10"]))
+    with c2: st.metric("P25",              fmt(q["p25"]))
+    with c3: st.metric("P50 (median)",     fmt(q["p50"]))
+    with c4: st.metric("P75",              fmt(q["p75"]))
+    with c5: st.metric("P90 (hot tail)",   fmt(q["p90"]))
+
+    st.caption(
+        f"Mean: **{fmt(q['mean'])}**  ·  "
+        f"Std (real uncertainty): **{q['std']:.2f}°C**  ·  "
+        f"Range: {fmt(q['min'])} → {fmt(q['max'])}"
+    )
+
+    hist = degree_histogram_f(pooled)
+    if not hist.empty:
+        st.markdown("**Probability per integer °F bin** (this is what you asked for)")
+        chart_df = hist.set_index("Max Temp (°F)")[["Probability"]]
+        st.bar_chart(chart_df, height=240)
+        st.dataframe(
+            hist.assign(**{
+                "Probability": hist["Probability"].apply(lambda p: f"{p*100:.1f}%"),
+                "Cumulative ≥": [
+                    f"{sum(hist['Probability'].iloc[i:])*100:.1f}%"
+                    for i in range(len(hist))
+                ],
+            }).set_index("Max Temp (°F)"),
+            use_container_width=True,
+            height=min(400, 50 + 35 * len(hist)),
+        )
+
+    with st.expander("Per-model breakdown"):
+        rows = []
+        for label, info in by_model.items():
+            if info.get("members"):
+                rows.append({
+                    "Model":  label,
+                    "Members": info["n"],
+                    "Mean":   fmt(info["mean"]),
+                    "Std":    f"{info['std']:.2f}°C",
+                })
+            else:
+                rows.append({
+                    "Model":  label,
+                    "Members": 0,
+                    "Mean":   "—",
+                    "Std":    f"⚠ {info.get('error', 'no data')[:80]}",
+                })
+        st.dataframe(pd.DataFrame(rows).set_index("Model"), use_container_width=True)
+
+    return q
+
+
 def render_markets(markets: list):
     if not markets:
         st.info("No temperature markets found. Try the **By Polymarket URL** tab with a direct link.")
@@ -497,6 +730,9 @@ def render_markets(markets: list):
                 st.metric("Model Probability", f"{mprob*100:.1f}%" if mprob else "—")
             with c3:
                 st.metric("Edge", label)
+
+            if m.get("method"):
+                st.caption(f"Method: {m['method']}")
 
             if m.get("per_model"):
                 per = "  ·  ".join(f"{lbl}: {p*100:.1f}%" for lbl, p in m["per_model"])
@@ -539,6 +775,15 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
 
     render_forecast_table(model_results, date_str)
 
+    # Probabilistic ensemble forecast — the real probability distribution
+    pooled, by_model = [], {}
+    with st.spinner("Fetching ensemble forecasts (this is the probability distribution)…"):
+        try:
+            pooled, by_model = fetch_super_ensemble(location["lat"], location["lon"], date_str)
+        except Exception as e:
+            st.warning(f"Ensemble fetch failed: {e}")
+    render_ensemble_section(pooled, by_model, date_str)
+
     # Markets
     if markets_override is not None:
         markets = markets_override
@@ -552,7 +797,7 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
             except Exception as e:
                 st.warning(f"Polymarket search failed: {e}. Use the URL tab for direct lookup.")
 
-    enriched = enrich_markets(markets, model_results)
+    enriched = enrich_markets(markets, model_results, pooled, by_model)
     render_markets(enriched)
     return model_results
 
