@@ -635,11 +635,54 @@ def search_poly_city(city_name: str) -> list:
     return data if isinstance(data, list) else data.get("data", [])
 
 
+def extract_resolution_station(description: str) -> dict | None:
+    """
+    Polymarket weather markets state the EXACT resolution station in the description.
+    Example:
+      "...recorded at the Buckley Space Force Base Station..."
+      "...available here: https://www.wunderground.com/history/daily/us/co/aurora/KBKF"
+    The Wunderground URL's last path segment is the ICAO. Returns:
+      {icao, station_name, wunderground_url, raw_excerpt} or None
+    """
+    if not description:
+        return None
+
+    # Wunderground URL — the last path segment is the station ID (ICAO for ASOS)
+    url_m = re.search(
+        r'(https?://(?:www\.)?wunderground\.com/[\w/\-]+/([A-Z0-9]{4,12}))(?=[/\s\)\.\,]|$)',
+        description, re.IGNORECASE)
+
+    icao = None
+    wu_url = None
+    if url_m:
+        wu_url = url_m.group(1)
+        candidate = url_m.group(2).upper()
+        # Only accept 4-letter ICAO format (Polymarket-resolution-grade)
+        if re.match(r'^[A-Z]{4}$', candidate):
+            icao = candidate
+
+    # Station name in prose: "recorded at the Buckley Space Force Base Station"
+    name_m = re.search(
+        r'recorded at(?: the)? ([A-Z][\w\s\-\.\']+?)(?:\s+[Ss]tation|\s+in degrees)',
+        description)
+    station_name = name_m.group(1).strip() if name_m else ""
+
+    if not icao:
+        return None
+
+    return {
+        "icao":             icao,
+        "station_name":     station_name,
+        "wunderground_url": wu_url or "",
+    }
+
+
 def parse_markets(events: list, city_filter: str | None = None) -> list:
     results    = []
     fltr_lower = city_filter.lower() if city_filter else None
     for event in events:
-        slug = event.get("slug", "")
+        slug          = event.get("slug", "")
+        event_desc    = event.get("description", "") or ""
         for market in event.get("markets", []):
             q  = market.get("question", "")
             ql = q.lower()
@@ -655,12 +698,20 @@ def parse_markets(events: list, city_filter: str | None = None) -> list:
                     prices = [float(p) for p in parsed]
             except Exception:
                 pass
+
+            # Resolution station: market-level description first, then event-level
+            mkt_desc   = market.get("description", "") or ""
+            full_desc  = mkt_desc if mkt_desc else event_desc
+            resolution = extract_resolution_station(full_desc)
+
             results.append({
-                "question":  q,
-                "yes_price": prices[0] if prices else 0.5,
-                "url":       f"https://polymarket.com/event/{slug}",
-                "bucket":    parse_temp_bucket(q),
-                "end_date":  market.get("endDate", event.get("endDate", "")),
+                "question":    q,
+                "description": full_desc,
+                "resolution":  resolution,
+                "yes_price":   prices[0] if prices else 0.5,
+                "url":         f"https://polymarket.com/event/{slug}",
+                "bucket":      parse_temp_bucket(q),
+                "end_date":    market.get("endDate", event.get("endDate", "")),
             })
     return results
 
@@ -1016,6 +1067,17 @@ def render_markets(markets: list):
             with c3:
                 st.metric("Edge", label)
 
+            if m.get("resolution") and m["resolution"].get("icao"):
+                res = m["resolution"]
+                st.markdown(
+                    f"🛬 **Resolution station: `{res['icao']}`**"
+                    + (f" — {res['station_name']}" if res.get('station_name') else "")
+                )
+                if res.get("wunderground_url"):
+                    st.caption(f"Wunderground: {res['wunderground_url']}")
+            else:
+                st.caption("⚠ No resolution station detected in market description")
+
             if m.get("method"):
                 st.caption(f"Method: {m['method']}")
 
@@ -1181,24 +1243,61 @@ with tab2:
                         if not markets:
                             st.error("No temperature/weather markets found in this event.")
                         else:
-                            city = date_str = None
+                            # Best path: use the resolution station from the
+                            # market's own description (most accurate)
+                            location_input = None
+                            station_info = None
                             for m in markets:
-                                city     = city     or parse_city_from_question(m["question"]) or parse_city_from_slug(slug)
+                                if m.get("resolution") and m["resolution"].get("icao"):
+                                    station_info = m["resolution"]
+                                    location_input = station_info["icao"]
+                                    break
+
+                            if station_info:
+                                st.success(
+                                    f"✅ Resolution station detected from market: "
+                                    f"**{station_info['icao']}**"
+                                    + (f" — {station_info['station_name']}"
+                                       if station_info.get("station_name") else "")
+                                )
+                                if station_info.get("wunderground_url"):
+                                    st.caption(
+                                        f"Source: [{station_info['wunderground_url']}]"
+                                        f"({station_info['wunderground_url']})"
+                                    )
+
+                            # Fall back to question/slug parsing if no resolution found
+                            date_str = None
+                            for m in markets:
                                 date_str = date_str or parse_date_from_question(m["question"])
-                                if city and date_str:
+                                if date_str:
                                     break
                             if not date_str:
                                 date_str = parse_date_from_slug(slug)
-                            # Trust slug year if question year differs
                             slug_date = parse_date_from_slug(slug)
                             if slug_date and date_str and slug_date[:4] != date_str[:4]:
                                 date_str = slug_date
 
-                            if not city:
-                                st.error(f"Could not extract city from: {markets[0]['question']}")
+                            if not location_input:
+                                # No resolution URL detected — fall back to city name
+                                for m in markets:
+                                    location_input = (parse_city_from_question(m["question"])
+                                                      or parse_city_from_slug(slug))
+                                    if location_input:
+                                        break
+                                if location_input:
+                                    st.warning(
+                                        f"⚠ Could not auto-detect resolution station from market "
+                                        f"description. Falling back to city geocoding for "
+                                        f"'{location_input}' — this may not match Polymarket's "
+                                        f"actual resolution source."
+                                    )
+
+                            if not location_input:
+                                st.error(f"Could not extract location from: {markets[0]['question']}")
                             elif not date_str:
                                 st.error(f"Could not extract date from: {markets[0]['question']}")
                             else:
-                                run_analysis(city, date_str, markets_override=markets)
+                                run_analysis(location_input, date_str, markets_override=markets)
                     except Exception as e:
                         st.error(f"Error: {e}")
