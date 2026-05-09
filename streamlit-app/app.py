@@ -18,7 +18,108 @@ GEOCODE_URL  = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 POLYMARKET   = "https://gamma-api.polymarket.com"
+AVWX_METAR   = "https://aviationweather.gov/api/data/metar"
+AVWX_STATION = "https://aviationweather.gov/api/data/stationinfo"
 SIGMA        = 2.5   # °C day-ahead forecast uncertainty (fallback only)
+
+# ── Polymarket Weather Stations (METAR ASOS) ──────────────────────────────────
+# Polymarket weather markets resolve via specific airport METAR stations.
+# Forecasts and current observations MUST be from these exact stations.
+# Keys are normalized lowercase aliases the user might type.
+POLYMARKET_STATIONS = {
+    # New York — Polymarket uses Central Park (KNYC) for "NYC" markets
+    "nyc":            {"icao": "KNYC", "name": "New York — Central Park"},
+    "new york":       {"icao": "KNYC", "name": "New York — Central Park"},
+    "new york city":  {"icao": "KNYC", "name": "New York — Central Park"},
+    "central park":   {"icao": "KNYC", "name": "New York — Central Park"},
+    "knyc":           {"icao": "KNYC", "name": "New York — Central Park"},
+    # Los Angeles — KLAX
+    "lax":            {"icao": "KLAX", "name": "Los Angeles — LAX"},
+    "los angeles":    {"icao": "KLAX", "name": "Los Angeles — LAX"},
+    "klax":           {"icao": "KLAX", "name": "Los Angeles — LAX"},
+    # Miami
+    "mia":            {"icao": "KMIA", "name": "Miami — MIA"},
+    "miami":          {"icao": "KMIA", "name": "Miami — MIA"},
+    "kmia":           {"icao": "KMIA", "name": "Miami — MIA"},
+    # Denver
+    "den":            {"icao": "KDEN", "name": "Denver — DEN"},
+    "denver":         {"icao": "KDEN", "name": "Denver — DEN"},
+    "kden":           {"icao": "KDEN", "name": "Denver — DEN"},
+    # Chicago
+    "ord":            {"icao": "KORD", "name": "Chicago — O'Hare"},
+    "chicago":        {"icao": "KORD", "name": "Chicago — O'Hare"},
+    "kord":           {"icao": "KORD", "name": "Chicago — O'Hare"},
+    # Austin
+    "aus":            {"icao": "KAUS", "name": "Austin-Bergstrom"},
+    "austin":         {"icao": "KAUS", "name": "Austin-Bergstrom"},
+    "kaus":           {"icao": "KAUS", "name": "Austin-Bergstrom"},
+    # Phoenix
+    "phx":            {"icao": "KPHX", "name": "Phoenix — Sky Harbor"},
+    "phoenix":        {"icao": "KPHX", "name": "Phoenix — Sky Harbor"},
+    "kphx":           {"icao": "KPHX", "name": "Phoenix — Sky Harbor"},
+    # Houston (Polymarket usually uses KIAH; sometimes KHOU)
+    "iah":            {"icao": "KIAH", "name": "Houston — Intercontinental"},
+    "houston":        {"icao": "KIAH", "name": "Houston — Intercontinental"},
+    "kiah":           {"icao": "KIAH", "name": "Houston — Intercontinental"},
+    # Dallas
+    "dfw":            {"icao": "KDFW", "name": "Dallas/Fort Worth"},
+    "dallas":         {"icao": "KDFW", "name": "Dallas/Fort Worth"},
+    "kdfw":           {"icao": "KDFW", "name": "Dallas/Fort Worth"},
+    # Philadelphia
+    "phl":            {"icao": "KPHL", "name": "Philadelphia — PHL"},
+    "philadelphia":   {"icao": "KPHL", "name": "Philadelphia — PHL"},
+    "kphl":           {"icao": "KPHL", "name": "Philadelphia — PHL"},
+    # Boston
+    "bos":            {"icao": "KBOS", "name": "Boston — Logan"},
+    "boston":         {"icao": "KBOS", "name": "Boston — Logan"},
+    "kbos":           {"icao": "KBOS", "name": "Boston — Logan"},
+    # Atlanta
+    "atl":            {"icao": "KATL", "name": "Atlanta — Hartsfield"},
+    "atlanta":        {"icao": "KATL", "name": "Atlanta — Hartsfield"},
+    "katl":           {"icao": "KATL", "name": "Atlanta — Hartsfield"},
+    # Seattle
+    "sea":            {"icao": "KSEA", "name": "Seattle — SeaTac"},
+    "seattle":        {"icao": "KSEA", "name": "Seattle — SeaTac"},
+    "ksea":           {"icao": "KSEA", "name": "Seattle — SeaTac"},
+    # San Francisco
+    "sfo":            {"icao": "KSFO", "name": "San Francisco — SFO"},
+    "san francisco":  {"icao": "KSFO", "name": "San Francisco — SFO"},
+    "ksfo":           {"icao": "KSFO", "name": "San Francisco — SFO"},
+    # Las Vegas
+    "las":            {"icao": "KLAS", "name": "Las Vegas — Harry Reid"},
+    "las vegas":      {"icao": "KLAS", "name": "Las Vegas — Harry Reid"},
+    "vegas":          {"icao": "KLAS", "name": "Las Vegas — Harry Reid"},
+    "klas":           {"icao": "KLAS", "name": "Las Vegas — Harry Reid"},
+    # Washington DC
+    "dca":            {"icao": "KDCA", "name": "Washington — Reagan National"},
+    "washington":     {"icao": "KDCA", "name": "Washington — Reagan National"},
+    "dc":             {"icao": "KDCA", "name": "Washington — Reagan National"},
+    "kdca":           {"icao": "KDCA", "name": "Washington — Reagan National"},
+    # Portland
+    "pdx":            {"icao": "KPDX", "name": "Portland — PDX"},
+    "portland":       {"icao": "KPDX", "name": "Portland — PDX"},
+    "kpdx":           {"icao": "KPDX", "name": "Portland — PDX"},
+    # Minneapolis
+    "msp":            {"icao": "KMSP", "name": "Minneapolis-St Paul"},
+    "minneapolis":    {"icao": "KMSP", "name": "Minneapolis-St Paul"},
+    "kmsp":           {"icao": "KMSP", "name": "Minneapolis-St Paul"},
+    # Detroit
+    "dtw":            {"icao": "KDTW", "name": "Detroit Metropolitan"},
+    "detroit":        {"icao": "KDTW", "name": "Detroit Metropolitan"},
+    "kdtw":           {"icao": "KDTW", "name": "Detroit Metropolitan"},
+    # San Diego
+    "san":            {"icao": "KSAN", "name": "San Diego — SAN"},
+    "san diego":      {"icao": "KSAN", "name": "San Diego — SAN"},
+    "ksan":           {"icao": "KSAN", "name": "San Diego — SAN"},
+    # Tampa
+    "tpa":            {"icao": "KTPA", "name": "Tampa International"},
+    "tampa":          {"icao": "KTPA", "name": "Tampa International"},
+    "ktpa":           {"icao": "KTPA", "name": "Tampa International"},
+    # Orlando
+    "mco":            {"icao": "KMCO", "name": "Orlando International"},
+    "orlando":        {"icao": "KMCO", "name": "Orlando International"},
+    "kmco":           {"icao": "KMCO", "name": "Orlando International"},
+}
 
 ENSEMBLE_MODELS = [
     {"id": "ecmwf_ifs025",  "label": "ECMWF ENS",   "expected": 51},
@@ -82,6 +183,100 @@ def bucket_probability(forecast_c, min_c, max_c) -> float:
     lo = normal_cdf(min_c, forecast_c, SIGMA) if min_c is not None else 0.0
     hi = normal_cdf(max_c, forecast_c, SIGMA) if max_c is not None else 1.0
     return max(0.01, min(0.99, hi - lo))
+
+# ── Airport / METAR ───────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=86400)   # station coords don't change
+def fetch_station_info(icao: str) -> dict:
+    """Get airport coordinates and metadata from NOAA aviationweather.gov."""
+    r = requests.get(AVWX_STATION,
+                     params={"ids": icao, "format": "json"}, timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        raise ValueError(f"Station {icao} not found in NOAA database")
+    s = data[0] if isinstance(data, list) else data
+    lat = s.get("latitude") if s.get("latitude") is not None else s.get("lat")
+    lon = s.get("longitude") if s.get("longitude") is not None else s.get("lon")
+    if lat is None or lon is None:
+        raise ValueError(f"Station {icao} has no coordinates")
+    return {
+        "icao":  s.get("icaoId", icao),
+        "iata":  s.get("iataId", ""),
+        "lat":   float(lat),
+        "lon":   float(lon),
+        "name":  s.get("site", icao),
+        "state": s.get("state", ""),
+        "country": s.get("country", ""),
+        "elev_m": s.get("elev"),
+    }
+
+
+@st.cache_data(ttl=300)   # METAR updates ~hourly; refresh every 5 min
+def fetch_metar(icao: str) -> dict:
+    """Latest METAR observation from NOAA. Returns parsed + raw."""
+    r = requests.get(AVWX_METAR,
+                     params={"ids": icao, "format": "json", "hours": 3},
+                     timeout=10)
+    r.raise_for_status()
+    data = r.json()
+    if not data:
+        raise ValueError(f"No METAR available for {icao} in last 3 hours")
+    obs = data[0] if isinstance(data, list) else data   # most recent
+    return {
+        "icao":         obs.get("icaoId", icao),
+        "raw":          obs.get("rawOb", ""),
+        "obs_time":     obs.get("reportTime") or obs.get("obsTime", ""),
+        "temp_c":       obs.get("temp"),
+        "dewp_c":       obs.get("dewp"),
+        "wind_dir":     obs.get("wdir"),
+        "wind_kt":      obs.get("wspd"),
+        "wind_gust_kt": obs.get("wgst"),
+        "alt_inhg":     obs.get("altim"),
+        "vis_sm":       obs.get("visib"),
+        "name":         obs.get("name", ""),
+    }
+
+
+def kt_to_kmh(kt):
+    if kt is None:
+        return None
+    try:
+        return float(kt) * 1.852
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_station(user_input: str) -> dict | None:
+    """
+    Recognise Polymarket airport codes / names and return station info.
+    Returns dict with {icao, name, lat, lon} or None to fall through to city geocoding.
+    """
+    if not user_input:
+        return None
+    s = user_input.strip().lower()
+
+    # 1. Known Polymarket aliases
+    if s in POLYMARKET_STATIONS:
+        info = POLYMARKET_STATIONS[s]
+        try:
+            station = fetch_station_info(info["icao"])
+            return {**station, "display_name": info["name"], "icao": info["icao"]}
+        except Exception:
+            return None
+
+    # 2. ICAO code (e.g. KSFO, EGLL)
+    if re.match(r'^[A-Z]{4}$', user_input.strip().upper()):
+        icao = user_input.strip().upper()
+        try:
+            station = fetch_station_info(icao)
+            return {**station, "display_name": f"{icao} — {station.get('name', icao)}",
+                    "icao": icao}
+        except Exception:
+            return None
+
+    return None
+
 
 # ── Geocoding ─────────────────────────────────────────────────────────────────
 
@@ -558,6 +753,52 @@ def fmt_bucket(bucket):
     return "—"
 
 
+def render_metar(metar: dict, station_name: str):
+    """Show live METAR observation — this is the actual airport reading."""
+    tc   = metar.get("temp_c")
+    dp   = metar.get("dewp_c")
+    wd   = metar.get("wind_dir")
+    wkt  = metar.get("wind_kt")
+    gkt  = metar.get("wind_gust_kt")
+    raw  = metar.get("raw", "")
+    ts   = metar.get("obs_time", "")
+
+    wind_str = "calm"
+    if wkt is not None and wkt > 0:
+        wkmh = kt_to_kmh(wkt)
+        wd_str = deg_to_compass(wd) if wd is not None else ""
+        wind_str = f"{wkt:.0f} kt / {wkmh:.0f} km/h {wd_str}".strip()
+        if gkt and gkt > 0:
+            wind_str += f" (gusts {gkt:.0f} kt / {kt_to_kmh(gkt):.0f} km/h)"
+
+    with st.container(border=True):
+        st.markdown(f"**🛬 Live METAR — {metar.get('icao','?')} ({station_name})**")
+        st.caption("Polymarket-grade data: same NOAA ASOS station that Wunderground sources.")
+
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Temperature",
+                      f"{tc:.1f}°C" if tc is not None else "—",
+                      delta=f"{c_to_f(tc):.1f}°F" if tc is not None else None,
+                      delta_color="off")
+        with c2:
+            st.metric("Dew Point", f"{dp:.1f}°C" if dp is not None else "—")
+        with c3:
+            st.metric("Wind", wind_str)
+        with c4:
+            vis = metar.get("vis_sm")
+            st.metric("Visibility", f"{vis} sm" if vis else "—")
+
+        if ts:
+            st.markdown(
+                f"⏱ **Observed: `{ts}` UTC**"
+                f"  ·  Source: NOAA Aviation Weather (aviationweather.gov)"
+            )
+        if raw:
+            with st.expander("Raw METAR"):
+                st.code(raw, language=None)
+
+
 def render_current_obs(obs: dict):
     tc   = obs.get("temp_c")
     tf   = c_to_f(tc)
@@ -790,20 +1031,58 @@ def render_markets(markets: list):
 # ── Main analysis flow ────────────────────────────────────────────────────────
 
 def run_analysis(city_input: str, date_str: str, markets_override=None):
-    with st.spinner("Geocoding…"):
-        try:
-            location = geocode_city(city_input)
-        except Exception as e:
-            st.error(str(e))
-            return None
+    # 1. Try to resolve as Polymarket airport station first
+    station = None
+    with st.spinner("Resolving station…"):
+        station = resolve_station(city_input)
+
+    if station:
+        location = {
+            "lat":          station["lat"],
+            "lon":          station["lon"],
+            "name":         station["icao"],
+            "display_name": station["display_name"],
+            "icao":         station["icao"],
+        }
+        is_station = True
+    else:
+        # Fall back to city geocoding
+        with st.spinner("Geocoding city…"):
+            try:
+                location = geocode_city(city_input)
+                location["icao"] = None
+                is_station = False
+            except Exception as e:
+                st.error(str(e))
+                return None
 
     with st.container(border=True):
         day_label = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %d, %Y").replace(" 0", " ")
-        st.subheader(f"📍 {location['display_name']}")
-        st.caption(f"{location['lat']:.4f}°N, {location['lon']:.4f}°E  ·  {day_label}")
+        if is_station:
+            st.subheader(f"🛬 {location['display_name']}")
+            st.caption(
+                f"ICAO: **{location['icao']}**  ·  "
+                f"{location['lat']:.4f}°N, {location['lon']:.4f}°E  ·  {day_label}  "
+                f"·  ✅ Polymarket-aligned station"
+            )
+        else:
+            st.subheader(f"📍 {location['display_name']}")
+            st.caption(
+                f"{location['lat']:.4f}°N, {location['lon']:.4f}°E  ·  {day_label}  "
+                f"·  ⚠ Not a Polymarket airport — type ICAO (e.g. KLAX) for resolution-grade data"
+            )
 
-    # Current observation
-    with st.spinner("Fetching current conditions…"):
+    # METAR — live airport observation (only when we have an ICAO)
+    if is_station:
+        with st.spinner(f"Fetching live METAR for {location['icao']}…"):
+            try:
+                metar = fetch_metar(location["icao"])
+                render_metar(metar, location["display_name"])
+            except Exception as e:
+                st.warning(f"METAR unavailable for {location['icao']}: {e}")
+
+    # Open-Meteo current observation (gridded, supplements METAR)
+    with st.spinner("Fetching gridded current conditions…"):
         try:
             obs = fetch_current_obs(location["lat"], location["lon"])
             render_current_obs(obs)
@@ -863,7 +1142,14 @@ tab1, tab2 = st.tabs(["🏙️ By City & Date", "🔗 By Polymarket URL"])
 with tab1:
     col1, col2 = st.columns([3, 1])
     with col1:
-        city_input = st.text_input("City or location", placeholder="Denver, LAX, Tel Aviv…", key="city")
+        city_input = st.text_input(
+            "Airport code, station, or city",
+            placeholder="KLAX, NYC, KDEN, Miami…",
+            help="Type a Polymarket airport code (KLAX, KNYC, KDEN…) for resolution-grade "
+                 "data from the exact METAR station Polymarket uses. City names also work "
+                 "but use gridded forecast.",
+            key="city",
+        )
     with col2:
         today    = date.today()
         sel_date = st.date_input("Date", value=today,
