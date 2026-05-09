@@ -330,32 +330,66 @@ def resolve_station(user_input: str) -> dict | None:
 
 @st.cache_data(ttl=600)
 def discover_all_weather_markets() -> list:
-    """Scan Polymarket Gamma API for all active weather/temperature markets."""
-    all_events = []
-    seen_slugs = set()
-    queries = ["temperature", "weather", "hottest", "warmest", "high temp",
-               "highest temperature", "degrees fahrenheit"]
+    """
+    Query the /markets endpoint directly — it returns market objects with
+    question + description, unlike /events search which returns empty markets[].
+    Falls back to per-slug event fetch for any event slugs seen in search.
+    """
+    all_markets: list[dict] = []
+    seen_ids: set[str] = set()
 
+    # Primary: /markets endpoint (returns full market objects with descriptions)
+    queries = ["temperature", "highest temperature", "degrees fahrenheit",
+               "hottest", "warmest", "high temp"]
     for q in queries:
         try:
-            r = requests.get(f"{POLYMARKET}/events", params={
-                "q":      q,
+            r = requests.get(f"{POLYMARKET}/markets", params={
+                "q":     q,
                 "active": "true",
-                "closed": "false",
-                "limit":  100,
+                "limit": 100,
             }, timeout=20)
             r.raise_for_status()
             data = r.json()
-            events = data if isinstance(data, list) else data.get("data", [])
-            for e in events:
-                slug = e.get("slug", "")
-                if slug and slug not in seen_slugs:
-                    seen_slugs.add(slug)
-                    all_events.append(e)
+            items = data if isinstance(data, list) else data.get("data", [])
+            for m in items:
+                mid = str(m.get("id") or m.get("conditionId") or "")
+                if mid and mid not in seen_ids:
+                    seen_ids.add(mid)
+                    all_markets.append(m)
         except Exception:
             pass
 
-    return all_events
+    # Fallback: collect slugs from /events search, fetch each individually
+    if not all_markets:
+        slugs: set[str] = set()
+        for q in queries[:3]:
+            try:
+                r = requests.get(f"{POLYMARKET}/events", params={
+                    "q": q, "active": "true", "limit": 100}, timeout=20)
+                r.raise_for_status()
+                data = r.json()
+                for e in (data if isinstance(data, list) else data.get("data", [])):
+                    if e.get("slug"):
+                        slugs.add(e["slug"])
+            except Exception:
+                pass
+        for slug in list(slugs)[:60]:
+            try:
+                r = requests.get(f"{POLYMARKET}/events", params={"slug": slug, "limit": 1}, timeout=10)
+                r.raise_for_status()
+                data = r.json()
+                events = data if isinstance(data, list) else data.get("data", [])
+                for event in events:
+                    for mkt in event.get("markets", []):
+                        mid = str(mkt.get("id") or mkt.get("conditionId") or "")
+                        if mid and mid not in seen_ids:
+                            seen_ids.add(mid)
+                            mkt.setdefault("eventSlug", slug)
+                            all_markets.append(mkt)
+            except Exception:
+                pass
+
+    return all_markets
 
 
 # ── Geocoding ─────────────────────────────────────────────────────────────────
@@ -757,42 +791,99 @@ def extract_resolution_station(description: str) -> dict | None:
     }
 
 
-def parse_markets(events: list, city_filter: str | None = None) -> list:
+def _parse_prices(market: dict) -> tuple:
+    """Return (yes_price, no_price) from outcomePrices or tokens."""
+    try:
+        raw    = market.get("outcomePrices")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(parsed, list) and len(parsed) >= 2:
+            return float(parsed[0]), float(parsed[1])
+        if isinstance(parsed, list) and len(parsed) == 1:
+            y = float(parsed[0])
+            return y, round(1 - y, 4)
+    except Exception:
+        pass
+    # Tokens fallback (CLOB structure)
+    tokens = market.get("tokens") or []
+    if isinstance(tokens, list) and len(tokens) >= 2:
+        try:
+            prices = {t.get("outcome", "").lower(): float(t.get("price", 0))
+                      for t in tokens if t.get("price") is not None}
+            y = prices.get("yes", prices.get("1", 0.5))
+            n = prices.get("no", prices.get("0", round(1 - y, 4)))
+            return y, n
+        except Exception:
+            pass
+    return 0.5, 0.5
+
+
+def _make_market_entry(question: str, description: str, yes_price: float,
+                       no_price: float, url: str, end_date: str) -> dict:
+    resolution = extract_resolution_station(description)
+    return {
+        "question":    question,
+        "description": description,
+        "resolution":  resolution,
+        "yes_price":   yes_price,
+        "no_price":    no_price,
+        "url":         url,
+        "bucket":      parse_temp_bucket(question),
+        "end_date":    end_date,
+    }
+
+
+def parse_markets(events_or_markets: list, city_filter: str | None = None) -> list:
+    """
+    Accepts either:
+     - list of EVENT objects (each has a 'markets' sub-list), OR
+     - list of raw MARKET objects (from /markets endpoint — no sub-list).
+    """
     results    = []
     fltr_lower = city_filter.lower() if city_filter else None
-    for event in events:
-        slug          = event.get("slug", "")
-        event_desc    = event.get("description", "") or ""
-        for market in event.get("markets", []):
-            q  = market.get("question", "")
-            ql = q.lower()
-            if not any(kw in ql for kw in WEATHER_KW):
-                continue
-            if fltr_lower and fltr_lower not in ql:
-                continue
-            prices = [0.5, 0.5]
-            try:
-                raw    = market.get("outcomePrices")
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
-                if isinstance(parsed, list) and parsed:
-                    prices = [float(p) for p in parsed]
-            except Exception:
-                pass
 
-            # Resolution station: market-level description first, then event-level
-            mkt_desc   = market.get("description", "") or ""
-            full_desc  = mkt_desc if mkt_desc else event_desc
-            resolution = extract_resolution_station(full_desc)
+    def _accept(q: str) -> bool:
+        ql = q.lower()
+        if fltr_lower and fltr_lower not in ql:
+            return False
+        return any(kw in ql for kw in WEATHER_KW)
 
-            results.append({
-                "question":    q,
-                "description": full_desc,
-                "resolution":  resolution,
-                "yes_price":   prices[0] if prices else 0.5,
-                "url":         f"https://polymarket.com/event/{slug}",
-                "bucket":      parse_temp_bucket(q),
-                "end_date":    market.get("endDate", event.get("endDate", "")),
-            })
+    for item in events_or_markets:
+        sub_markets = item.get("markets")
+
+        # ── Raw market object (from /markets endpoint) ───────────────────────
+        if sub_markets is None:
+            q = item.get("question", "")
+            if not q or not _accept(q):
+                continue
+            desc = item.get("description", "") or ""
+            # Prefer event slug for URL (groupSlug / slug field on market)
+            slug = (item.get("groupSlug")
+                    or item.get("eventSlug")
+                    or item.get("slug")
+                    or "")
+            yes_p, no_p = _parse_prices(item)
+            results.append(_make_market_entry(
+                q, desc, yes_p, no_p,
+                f"https://polymarket.com/event/{slug}" if slug else "",
+                item.get("endDate", ""),
+            ))
+            continue
+
+        # ── Event object containing sub-markets ─────────────────────────────
+        slug       = item.get("slug", "")
+        event_desc = item.get("description", "") or ""
+        for mkt in (sub_markets or []):
+            q = mkt.get("question", "")
+            if not q or not _accept(q):
+                continue
+            desc = mkt.get("description", "") or event_desc
+            yes_p, no_p = _parse_prices(mkt)
+            results.append(_make_market_entry(
+                q, desc, yes_p, no_p,
+                f"https://polymarket.com/event/{slug}",
+                mkt.get("endDate", item.get("endDate", "")),
+            ))
+
     return results
 
 
@@ -885,7 +976,7 @@ def fmt_bucket(bucket):
 
 
 def render_metar(metar: dict, station_name: str):
-    """Show live METAR observation — this is the actual airport reading."""
+    """Live METAR observation — same NOAA ASOS source that Wunderground uses."""
     tc   = metar.get("temp_c")
     dp   = metar.get("dewp_c")
     wd   = metar.get("wind_dir")
@@ -893,41 +984,91 @@ def render_metar(metar: dict, station_name: str):
     gkt  = metar.get("wind_gust_kt")
     raw  = metar.get("raw", "")
     ts   = metar.get("obs_time", "")
+    alt  = metar.get("alt_inhg")
+    vis  = metar.get("vis_sm")
 
-    wind_str = "calm"
-    if wkt is not None and wkt > 0:
-        wkmh = kt_to_kmh(wkt)
-        wd_str = deg_to_compass(wd) if wd is not None else ""
-        wind_str = f"{wkt:.0f} kt / {wkmh:.0f} km/h {wd_str}".strip()
-        if gkt and gkt > 0:
-            wind_str += f" (gusts {gkt:.0f} kt / {kt_to_kmh(gkt):.0f} km/h)"
+    def _tc(c):
+        if c is None:
+            return "—"
+        return f"{c:.1f}°C  ({c*9/5+32:.1f}°F)"
+
+    # Humidity from temp + dewpoint (Magnus formula)
+    hum_str = "—"
+    if tc is not None and dp is not None:
+        try:
+            from math import exp as _exp
+            rh = 100 * _exp(17.625 * dp / (243.04 + dp)) / _exp(17.625 * tc / (243.04 + tc))
+            hum_str = f"{rh:.0f}%"
+        except Exception:
+            pass
+
+    # Wind
+    if wkt is None or wkt == 0:
+        wind_label = "Calm"
+        wind_help  = "No significant wind"
+    else:
+        wkmh   = kt_to_kmh(wkt)
+        dir_s  = f"{wd}° ({deg_to_compass(wd)})" if wd is not None else "variable"
+        wind_label = f"{wkt:.0f} kt  ({wkmh:.0f} km/h)"
+        wind_help  = f"Direction: {dir_s}"
+        if gkt and float(gkt) > 0:
+            wind_label += f"  gusts {float(gkt):.0f} kt ({kt_to_kmh(gkt):.0f} km/h)"
 
     with st.container(border=True):
-        st.markdown(f"**🛬 Live METAR — {metar.get('icao','?')} ({station_name})**")
-        st.caption("Polymarket-grade data: same NOAA ASOS station that Wunderground sources.")
+        icao = metar.get("icao", "?")
+        st.markdown(f"**🛬 Live Station Observation — `{icao}` ({station_name})**")
+        st.caption("Source: NOAA ASOS via aviationweather.gov — same raw data Wunderground republishes for Polymarket resolution")
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
-            st.metric("Temperature",
-                      f"{tc:.1f}°C" if tc is not None else "—",
-                      delta=f"{c_to_f(tc):.1f}°F" if tc is not None else None,
-                      delta_color="off")
+            st.metric(
+                "Temperature 🌡",
+                f"{tc:.1f}°C" if tc is not None else "—",
+                delta=f"{tc*9/5+32:.1f}°F" if tc is not None else None,
+                delta_color="off",
+                help="Current dry-bulb temperature at the station"
+            )
         with c2:
-            st.metric("Dew Point", f"{dp:.1f}°C" if dp is not None else "—")
+            st.metric(
+                "Dew Point 💧",
+                f"{dp:.1f}°C" if dp is not None else "—",
+                delta=f"{dp*9/5+32:.1f}°F" if dp is not None else None,
+                delta_color="off",
+                help="Dew point = moisture in air. Closer to temp → more humid"
+            )
         with c3:
-            st.metric("Wind", wind_str)
+            st.metric(
+                "Humidity",
+                hum_str,
+                help="Relative humidity calculated from temp + dew point"
+            )
         with c4:
-            vis = metar.get("vis_sm")
-            st.metric("Visibility", f"{vis} sm" if vis else "—")
+            st.metric(
+                "Wind 💨",
+                wind_label,
+                help=wind_help
+            )
+        with c5:
+            st.metric(
+                "Visibility",
+                f"{float(vis):.0f} sm" if vis else "—",
+                help="Statute miles (sm). 10 sm = standard clear visibility"
+            )
 
         if ts:
-            st.markdown(
-                f"⏱ **Observed: `{ts}` UTC**"
-                f"  ·  Source: NOAA Aviation Weather (aviationweather.gov)"
-            )
+            # Format timestamp nicely
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                ts_display = dt.strftime("%d %b %Y  %H:%M UTC")
+            except Exception:
+                ts_display = ts
+            st.info(f"⏱ **Observation time: {ts_display}**  ·  Pressure: {alt:.2f} inHg" if alt else
+                    f"⏱ **Observation time: {ts_display}**")
+
         if raw:
-            with st.expander("Raw METAR"):
+            with st.expander("Raw METAR string (for reference)"):
                 st.code(raw, language=None)
+                st.caption("METAR format: station  time  wind(dir/speed)kt  vis  clouds  temp/dewpoint  altimeter")
 
 
 def render_current_obs(obs: dict):
@@ -1130,45 +1271,76 @@ def render_markets(markets: list):
         return
 
     st.markdown(f"**📊 Polymarket Markets ({len(markets)})**")
-    st.caption("Edge = Model probability − Market price (positive → model thinks YES is underpriced)")
+    st.caption("Edge = Model probability − Market price  ·  positive → BUY YES  ·  negative → BUY NO")
 
     sorted_m = sorted(markets, key=lambda m: abs(m.get("edge") or 0), reverse=True)
 
     for m in sorted_m:
         edge  = m.get("edge")
         mprob = m.get("model_prob")
+        yes_p = m.get("yes_price", 0.5)
+        no_p  = m.get("no_price", round(1 - yes_p, 4))
         label = fmt_edge(edge)
-        with st.expander(f"{label}  —  {m['question'][:90]}{'…' if len(m['question']) > 90 else ''}"):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Market Price", f"{m['yes_price']*100:.1f}%")
-            with c2:
-                st.metric("Model Probability", f"{mprob*100:.1f}%" if mprob else "—")
-            with c3:
-                st.metric("Edge", label)
 
+        with st.expander(f"{label}  —  {m['question'][:90]}{'…' if len(m['question']) > 90 else ''}"):
+
+            # ── Prices row: YES + NO side by side ──────────────────────────
+            c1, c2, c3, c4, c5 = st.columns(5)
+            with c1:
+                st.metric(
+                    "YES price",
+                    f"{yes_p*100:.1f}¢",
+                    help="Cost of 1 YES share (pays $1 if market resolves YES)"
+                )
+            with c2:
+                st.metric(
+                    "NO price",
+                    f"{no_p*100:.1f}¢",
+                    help="Cost of 1 NO share (pays $1 if market resolves NO)"
+                )
+            with c3:
+                st.metric(
+                    "Model P(YES)",
+                    f"{mprob*100:.1f}%" if mprob is not None else "—",
+                    help="Probability computed from weather model ensemble"
+                )
+            with c4:
+                no_edge = (1 - mprob - no_p) if mprob is not None else None
+                st.metric(
+                    "YES edge",
+                    f"{edge*100:+.1f}pp" if edge is not None else "—",
+                    help="Model P(YES) − YES price. Positive → model says YES is cheap"
+                )
+            with c5:
+                st.metric(
+                    "NO edge",
+                    f"{no_edge*100:+.1f}pp" if no_edge is not None else "—",
+                    help="Model P(NO) − NO price. Positive → model says NO is cheap"
+                )
+
+            # ── Resolution station ──────────────────────────────────────────
             if m.get("resolution") and m["resolution"].get("icao"):
                 res = m["resolution"]
                 st.markdown(
-                    f"🛬 **Resolution station: `{res['icao']}`**"
-                    + (f" — {res['station_name']}" if res.get('station_name') else "")
+                    f"🛬 **Resolution: `{res['icao']}`"
+                    + (f" — {res['station_name']}" if res.get("station_name") else "")
+                    + "**"
                 )
                 if res.get("wunderground_url"):
                     st.caption(f"Wunderground: {res['wunderground_url']}")
             else:
                 st.caption("⚠ No resolution station detected in market description")
 
-            if m.get("method"):
-                st.caption(f"Method: {m['method']}")
-
+            if m.get("bucket"):
+                st.caption(f"Temperature bucket: {fmt_bucket(m['bucket'])}")
             if m.get("per_model"):
                 per = "  ·  ".join(f"{lbl}: {p*100:.1f}%" for lbl, p in m["per_model"])
                 st.caption(f"Per model: {per}")
+            if m.get("method"):
+                st.caption(f"Probability method: {m['method']}")
 
-            if m.get("bucket"):
-                st.caption(f"Bucket: {fmt_bucket(m['bucket'])}")
-
-            st.link_button("Open on Polymarket ↗", m["url"])
+            if m.get("url"):
+                st.link_button("Open on Polymarket ↗", m["url"])
 
 # ── Main analysis flow ────────────────────────────────────────────────────────
 
@@ -1501,20 +1673,65 @@ tab0, tab1, tab2 = st.tabs([
     "🔗 By Polymarket URL",
 ])
 
+def _build_station_options() -> list[str]:
+    """Combo box options: DB (verified) + hardcoded fallback, deduplicated by ICAO."""
+    options: dict[str, str] = {}
+    # 1. JSON DB — verified from market descriptions
+    for icao, info in load_stations_db().items():
+        city = info.get("city", "")
+        name = info.get("name", "")
+        label = f"{icao} — {city} ({name})" if city else f"{icao} — {name}"
+        options[icao] = label
+    # 2. Hardcoded fallback (guess mappings — not verified)
+    for alias, info in POLYMARKET_STATIONS.items():
+        icao = info["icao"]
+        if icao not in options:
+            options[icao] = f"{icao} — {info['name']}  ⚠ unverified"
+    return sorted(options.values())
+
+
 with tab0:
     st.markdown("### Scan all active Polymarket weather markets")
     st.caption(
-        "Pulls every active temperature/weather market from the Polymarket Gamma API, "
-        "extracts the **exact resolution station** from each market's description "
-        "(Wunderground URL), forecasts that station, and ranks all markets by |edge|."
+        "Queries the Polymarket Gamma API, extracts the **exact resolution station** "
+        "from each market's description (Wunderground URL → ICAO), forecasts that station, "
+        "and ranks all markets by |edge|. YES + NO prices shown for each bucket."
     )
-    if st.button("🔍 Scan now", type="primary", key="btn_discover"):
+
+    # Quick station picker — for targeted single-station analysis
+    station_opts = _build_station_options()
+    if station_opts:
+        with st.expander("⚡ Quick analysis — pick a specific station"):
+            qcol1, qcol2 = st.columns([3, 1])
+            with qcol1:
+                chosen_station = st.selectbox(
+                    "Station",
+                    options=station_opts,
+                    index=None,
+                    placeholder="Select a Polymarket station…",
+                    key="quick_station",
+                )
+            with qcol2:
+                today_q  = date.today()
+                quick_dt = st.date_input(
+                    "Date",
+                    value=today_q,
+                    min_value=today_q - timedelta(days=1),
+                    max_value=today_q + timedelta(days=16),
+                    key="quick_date",
+                )
+            if st.button("Analyze this station", key="btn_quick"):
+                if chosen_station:
+                    icao = chosen_station.split("—")[0].strip().split()[0]
+                    run_analysis(icao, quick_dt.strftime("%Y-%m-%d"))
+
+    st.divider()
+    if st.button("🔍 Scan ALL active weather markets", type="primary", key="btn_discover"):
         run_discover_all()
     else:
         db = load_stations_db()
         if db:
-            st.caption(f"Local stations DB has **{len(db)}** verified entries: "
-                       f"{', '.join(sorted(db.keys()))}")
+            st.caption(f"Known stations in DB: **{', '.join(sorted(db.keys()))}**")
 
 with tab1:
     col1, col2 = st.columns([3, 1])
