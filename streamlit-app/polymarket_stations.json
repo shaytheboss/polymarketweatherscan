@@ -1,0 +1,18 @@
+{
+  "_comment": "Polymarket weather market resolution stations. Each market's description provides the canonical Wunderground URL containing the ICAO. This file is built from those descriptions.",
+  "_last_updated": "2026-05-09",
+  "_format": "stations[ICAO] = { name, city, state, country, polymarket_aliases, wunderground_url, verified }",
+
+  "stations": {
+    "KBKF": {
+      "name": "Buckley Space Force Base",
+      "city": "Aurora",
+      "state": "CO",
+      "country": "US",
+      "polymarket_aliases": ["denver"],
+      "wunderground_url": "https://www.wunderground.com/history/daily/us/co/aurora/KBKF",
+      "verified": true,
+      "notes": "Polymarket uses KBKF (not KDEN) for Denver markets"
+    }
+  }
+}

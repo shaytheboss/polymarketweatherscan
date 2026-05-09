@@ -3,6 +3,7 @@ Polymarket Weather Checker — Streamlit version
 Forecasts: ECMWF IFS + GFS-GraphCast + GFS  vs  Polymarket temperature markets
 Current conditions: Open-Meteo live data (temp, wind, humidity + timestamp)
 """
+import os
 import re
 import json
 from datetime import date, datetime, timedelta
@@ -11,6 +12,40 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+
+
+# ── Persistent station database (Polymarket-verified) ────────────────────────
+STATIONS_DB_PATH = os.path.join(os.path.dirname(__file__), "polymarket_stations.json")
+
+
+@st.cache_resource
+def load_stations_db() -> dict:
+    """Load the verified Polymarket stations DB committed to the repo."""
+    try:
+        with open(STATIONS_DB_PATH) as f:
+            data = json.load(f)
+        return data.get("stations", {})
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        return {}
+
+
+def stations_by_alias() -> dict:
+    """Build a lookup: alias → station_info from the JSON DB."""
+    db = load_stations_db()
+    out = {}
+    for icao, info in db.items():
+        for alias in info.get("polymarket_aliases", []):
+            out[alias.lower()] = {
+                "icao": icao,
+                "name": f"{info.get('city','')} — {info.get('name','')}",
+            }
+        out[icao.lower()] = {
+            "icao": icao,
+            "name": f"{info.get('city','')} — {info.get('name','')}",
+        }
+    return out
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -250,32 +285,77 @@ def kt_to_kmh(kt):
 def resolve_station(user_input: str) -> dict | None:
     """
     Recognise Polymarket airport codes / names and return station info.
+    Lookup priority: 1) JSON DB (verified)  2) hardcoded fallback  3) raw ICAO.
     Returns dict with {icao, name, lat, lon} or None to fall through to city geocoding.
     """
     if not user_input:
         return None
     s = user_input.strip().lower()
 
-    # 1. Known Polymarket aliases
+    # 1. Verified Polymarket stations DB (loaded from JSON file)
+    db_aliases = stations_by_alias()
+    if s in db_aliases:
+        info = db_aliases[s]
+        try:
+            station = fetch_station_info(info["icao"])
+            return {**station, "display_name": info["name"], "icao": info["icao"],
+                    "verified": True}
+        except Exception:
+            return None
+
+    # 2. Hardcoded fallback (best-guess city → station mappings)
     if s in POLYMARKET_STATIONS:
         info = POLYMARKET_STATIONS[s]
         try:
             station = fetch_station_info(info["icao"])
-            return {**station, "display_name": info["name"], "icao": info["icao"]}
+            return {**station, "display_name": info["name"], "icao": info["icao"],
+                    "verified": False}
         except Exception:
             return None
 
-    # 2. ICAO code (e.g. KSFO, EGLL)
+    # 3. Raw ICAO code (KLAX, EGLL, etc.)
     if re.match(r'^[A-Z]{4}$', user_input.strip().upper()):
         icao = user_input.strip().upper()
         try:
             station = fetch_station_info(icao)
             return {**station, "display_name": f"{icao} — {station.get('name', icao)}",
-                    "icao": icao}
+                    "icao": icao, "verified": False}
         except Exception:
             return None
 
     return None
+
+
+# ── Polymarket-wide market discovery ──────────────────────────────────────────
+
+@st.cache_data(ttl=600)
+def discover_all_weather_markets() -> list:
+    """Scan Polymarket Gamma API for all active weather/temperature markets."""
+    all_events = []
+    seen_slugs = set()
+    queries = ["temperature", "weather", "hottest", "warmest", "high temp",
+               "highest temperature", "degrees fahrenheit"]
+
+    for q in queries:
+        try:
+            r = requests.get(f"{POLYMARKET}/events", params={
+                "q":      q,
+                "active": "true",
+                "closed": "false",
+                "limit":  100,
+            }, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            events = data if isinstance(data, list) else data.get("data", [])
+            for e in events:
+                slug = e.get("slug", "")
+                if slug and slug not in seen_slugs:
+                    seen_slugs.add(slug)
+                    all_events.append(e)
+        except Exception:
+            pass
+
+    return all_events
 
 
 # ── Geocoding ─────────────────────────────────────────────────────────────────
@@ -1188,6 +1268,222 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
     render_markets(enriched)
     return model_results
 
+# ── Discover-all flow ─────────────────────────────────────────────────────────
+
+def run_discover_all():
+    """Scan Polymarket → extract stations → forecast each → rank by edge."""
+    with st.spinner("🔍 Scanning Polymarket Gamma API…"):
+        events = discover_all_weather_markets()
+
+    st.success(f"Found **{len(events)}** weather-related events on Polymarket")
+
+    all_markets = parse_markets(events)
+    if not all_markets:
+        st.warning("No temperature markets found in any event.")
+        return
+
+    # Categorise: parseable vs needs-attention
+    valid          = []
+    no_resolution  = []
+    no_bucket      = []
+    no_date        = []
+    today          = date.today()
+    horizon        = today + timedelta(days=16)
+
+    for m in all_markets:
+        if not m.get("resolution") or not m["resolution"].get("icao"):
+            no_resolution.append(m)
+            continue
+        if not m.get("bucket"):
+            no_bucket.append(m)
+            continue
+        ds = parse_date_from_question(m["question"]) or parse_date_from_slug(
+            m["url"].split("/event/")[-1] if "/event/" in m["url"] else "")
+        if not ds:
+            no_date.append(m)
+            continue
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except Exception:
+            no_date.append(m)
+            continue
+        # Skip if already past or beyond forecast window
+        if d < today - timedelta(days=1) or d > horizon:
+            continue
+        m["target_date"] = ds
+        valid.append(m)
+
+    unique_stations = sorted(set(m["resolution"]["icao"] for m in valid))
+    unique_groups   = set((m["resolution"]["icao"], m["target_date"]) for m in valid)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Markets analyzable", len(valid))
+    c2.metric("Unique stations",    len(unique_stations))
+    c3.metric("Forecast jobs",      len(unique_groups))
+
+    if not valid:
+        st.warning("No markets passed all filters (need: resolution station + temp bucket + date in forecast window).")
+        return
+
+    # Group markets by (icao, date) to avoid duplicate forecast calls
+    groups: dict = {}
+    for m in valid:
+        groups.setdefault((m["resolution"]["icao"], m["target_date"]), []).append(m)
+
+    progress = st.progress(0.0, text=f"Forecasting {len(groups)} (station, date) pairs…")
+    enriched_all   = []
+    failed_groups  = []
+    discovered_db  = {}    # ICAO → metadata
+    forecast_cache = {}    # (icao,date) → consensus_max_c
+
+    for i, ((icao, date_str), group_markets) in enumerate(sorted(groups.items())):
+        progress.progress((i + 1) / len(groups),
+                          text=f"({i+1}/{len(groups)}) {icao} on {date_str}…")
+        try:
+            station = fetch_station_info(icao)
+            lat, lon = station["lat"], station["lon"]
+
+            # Record station for export
+            sample = group_markets[0]
+            discovered_db[icao] = {
+                "name":             station.get("name", ""),
+                "city":             station.get("state", ""),
+                "country":          station.get("country", ""),
+                "lat":              lat,
+                "lon":              lon,
+                "wunderground_url": sample.get("resolution", {}).get("wunderground_url", ""),
+                "polymarket_aliases": [],  # human to fill
+                "markets_seen":     len(group_markets),
+            }
+
+            # Deterministic forecasts
+            model_results = [
+                fetch_model_with_fallback(lat, lon, date_str, mdl)
+                for mdl in MODELS
+            ]
+            valid_det = [r for r in model_results if r.get("max_c") is not None]
+            consensus_c = (sum(r["max_c"] for r in valid_det) / len(valid_det)
+                           if valid_det else None)
+            forecast_cache[(icao, date_str)] = consensus_c
+
+            # Probability distribution
+            try:
+                pooled, by_model = fetch_super_ensemble(lat, lon, date_str)
+            except Exception:
+                pooled, by_model = [], {}
+
+            if len(pooled) >= 10:
+                samples = pooled
+            else:
+                samples, _, _ = compute_det_distribution(model_results)
+
+            # Edges per market in group
+            enriched = enrich_markets(group_markets, model_results, samples, by_model)
+            for em in enriched:
+                em["icao"]          = icao
+                em["station_name"]  = station.get("name", "")
+                em["target_date"]   = date_str
+                em["consensus_c"]   = consensus_c
+                em["consensus_f"]   = (consensus_c * 9/5 + 32) if consensus_c is not None else None
+            enriched_all.extend(enriched)
+        except Exception as e:
+            failed_groups.append({"icao": icao, "date": date_str, "error": str(e),
+                                  "markets": group_markets})
+
+    progress.empty()
+
+    # Build ranked dataframe
+    sortable = [m for m in enriched_all if m.get("edge") is not None]
+    sortable.sort(key=lambda m: abs(m["edge"]), reverse=True)
+
+    if not sortable:
+        st.warning("No markets had a computable edge.")
+    else:
+        st.markdown(f"### 🎯 {len(sortable)} markets ranked by |edge|")
+
+        rows = []
+        for m in sortable:
+            edge_pp = m["edge"] * 100
+            if edge_pp >= 10:    action = "🟢 BUY YES"
+            elif edge_pp >= 5:   action = "🟡 small YES"
+            elif edge_pp <= -10: action = "🔴 BUY NO"
+            elif edge_pp <= -5:  action = "🟠 small NO"
+            else:                action = "—"
+
+            rows.append({
+                "Edge pp":   f"{edge_pp:+.1f}",
+                "Action":    action,
+                "Mkt":       f"{m['yes_price']*100:.1f}%",
+                "Model":     f"{m['model_prob']*100:.1f}%" if m.get("model_prob") else "—",
+                "ICAO":      m["icao"],
+                "Date":      m["target_date"],
+                "Forecast Hi °F": f"{m['consensus_f']:.1f}" if m.get("consensus_f") else "—",
+                "Station":   (m.get("station_name") or "")[:32],
+                "Question":  m["question"][:80] + ("…" if len(m["question"]) > 80 else ""),
+                "URL":       m["url"],
+            })
+
+        df = pd.DataFrame(rows)
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "URL": st.column_config.LinkColumn("Link", display_text="↗"),
+            },
+            height=min(700, 60 + 35 * len(rows)),
+        )
+
+    # Issues panel
+    skipped = len(no_resolution) + len(no_bucket) + len(no_date) + len(failed_groups)
+    if skipped:
+        with st.expander(f"⚠ {skipped} markets/groups skipped"):
+            if no_resolution:
+                st.markdown(f"**{len(no_resolution)} markets — resolution station not detected in description:**")
+                for m in no_resolution[:8]:
+                    st.caption(f"• {m['question'][:120]}")
+            if no_bucket:
+                st.markdown(f"**{len(no_bucket)} markets — temperature bucket not parsed:**")
+                for m in no_bucket[:5]:
+                    st.caption(f"• {m['question'][:120]}")
+            if no_date:
+                st.markdown(f"**{len(no_date)} markets — date out of forecast window or unparseable:**")
+                for m in no_date[:5]:
+                    st.caption(f"• {m['question'][:120]}")
+            if failed_groups:
+                st.markdown(f"**{len(failed_groups)} forecast groups failed:**")
+                for f in failed_groups[:5]:
+                    st.caption(f"• {f['icao']} on {f['date']}: {f['error'][:120]}")
+
+    # JSON export — paste into polymarket_stations.json
+    if discovered_db:
+        existing = load_stations_db()
+        new_icaos = [icao for icao in discovered_db if icao not in existing]
+
+        with st.expander(
+            f"💾 Discovered {len(discovered_db)} stations  ·  "
+            f"{len(new_icaos)} new (not in polymarket_stations.json)"
+        ):
+            st.caption(
+                "Copy this JSON snippet into `streamlit-app/polymarket_stations.json` "
+                "under `\"stations\"` to make these aliases available in the City tab."
+            )
+            export = {
+                icao: {
+                    "name":              info["name"],
+                    "city":              info.get("city", ""),
+                    "country":           info.get("country", ""),
+                    "wunderground_url":  info.get("wunderground_url", ""),
+                    "polymarket_aliases": [],
+                    "markets_seen":      info["markets_seen"],
+                    "verified":          True,
+                    "_status":           "new" if icao in new_icaos else "already in DB",
+                }
+                for icao, info in sorted(discovered_db.items())
+            }
+            st.json(export)
+
+
 # ── Page layout ───────────────────────────────────────────────────────────────
 
 st.set_page_config(
@@ -1199,7 +1495,26 @@ st.set_page_config(
 st.title("☁️ Polymarket Weather Checker")
 st.caption("ECMWF IFS · GFS-GraphCast · GFS  vs  Polymarket temperature markets")
 
-tab1, tab2 = st.tabs(["🏙️ By City & Date", "🔗 By Polymarket URL"])
+tab0, tab1, tab2 = st.tabs([
+    "🔍 Discover All Markets",
+    "🏙️ By City & Date",
+    "🔗 By Polymarket URL",
+])
+
+with tab0:
+    st.markdown("### Scan all active Polymarket weather markets")
+    st.caption(
+        "Pulls every active temperature/weather market from the Polymarket Gamma API, "
+        "extracts the **exact resolution station** from each market's description "
+        "(Wunderground URL), forecasts that station, and ranks all markets by |edge|."
+    )
+    if st.button("🔍 Scan now", type="primary", key="btn_discover"):
+        run_discover_all()
+    else:
+        db = load_stations_db()
+        if db:
+            st.caption(f"Local stations DB has **{len(db)}** verified entries: "
+                       f"{', '.join(sorted(db.keys()))}")
 
 with tab1:
     col1, col2 = st.columns([3, 1])
