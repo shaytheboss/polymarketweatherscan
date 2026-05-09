@@ -331,65 +331,23 @@ def resolve_station(user_input: str) -> dict | None:
 @st.cache_data(ttl=600)
 def discover_all_weather_markets() -> list:
     """
-    Query the /markets endpoint directly — it returns market objects with
-    question + description, unlike /events search which returns empty markets[].
-    Falls back to per-slug event fetch for any event slugs seen in search.
+    Get full event objects (with populated markets[]) for every active
+    weather/temperature event. The /events search returns events with
+    empty markets[], so we collect slugs first, then fetch each by slug.
+    Returns a list of EVENT dicts.
     """
-    all_markets: list[dict] = []
-    seen_ids: set[str] = set()
-
-    # Primary: /markets endpoint (returns full market objects with descriptions)
     queries = ["temperature", "highest temperature", "degrees fahrenheit",
                "hottest", "warmest", "high temp"]
+    slugs: set[str] = set()
     for q in queries:
-        try:
-            r = requests.get(f"{POLYMARKET}/markets", params={
-                "q":     q,
-                "active": "true",
-                "limit": 100,
-            }, timeout=20)
-            r.raise_for_status()
-            data = r.json()
-            items = data if isinstance(data, list) else data.get("data", [])
-            for m in items:
-                mid = str(m.get("id") or m.get("conditionId") or "")
-                if mid and mid not in seen_ids:
-                    seen_ids.add(mid)
-                    all_markets.append(m)
-        except Exception:
-            pass
+        slugs |= _search_event_slugs(q, limit=100)
 
-    # Fallback: collect slugs from /events search, fetch each individually
-    if not all_markets:
-        slugs: set[str] = set()
-        for q in queries[:3]:
-            try:
-                r = requests.get(f"{POLYMARKET}/events", params={
-                    "q": q, "active": "true", "limit": 100}, timeout=20)
-                r.raise_for_status()
-                data = r.json()
-                for e in (data if isinstance(data, list) else data.get("data", [])):
-                    if e.get("slug"):
-                        slugs.add(e["slug"])
-            except Exception:
-                pass
-        for slug in list(slugs)[:60]:
-            try:
-                r = requests.get(f"{POLYMARKET}/events", params={"slug": slug, "limit": 1}, timeout=10)
-                r.raise_for_status()
-                data = r.json()
-                events = data if isinstance(data, list) else data.get("data", [])
-                for event in events:
-                    for mkt in event.get("markets", []):
-                        mid = str(mkt.get("id") or mkt.get("conditionId") or "")
-                        if mid and mid not in seen_ids:
-                            seen_ids.add(mid)
-                            mkt.setdefault("eventSlug", slug)
-                            all_markets.append(mkt)
-            except Exception:
-                pass
-
-    return all_markets
+    full_events = []
+    for slug in list(slugs)[:120]:   # safety cap
+        ev = _fetch_event_full(slug)
+        if ev:
+            full_events.append(ev)
+    return full_events
 
 
 # ── Geocoding ─────────────────────────────────────────────────────────────────
@@ -705,26 +663,72 @@ def parse_city_from_slug(slug: str):
 
 
 def parse_temp_bucket(question: str):
+    """
+    Recognise temperature buckets in many phrasings:
+      "76-77°F"       → between
+      "75°F or below" / "below 75"  → upper-bound
+      "85°F or above" / "above 85"  → lower-bound
+      "between 80 and 85"           → between
+    """
     if not question:
         return None
-    q    = question.lower()
-    is_f = bool(re.search(r'°f|fahrenheit', q)) or (
-           bool(re.search(r'\bdegrees?\b', q)) and not re.search(r'celsius|°c', q))
+    q = question.lower().strip()
+
+    # Polymarket weather markets default to °F unless Celsius is explicit
+    is_f = not bool(re.search(r'celsius|°\s*c\b', q))
+
     def to_c(v):
         return round((v - 32) * 5/9, 2) if is_f else round(v, 2)
 
-    m = re.search(r'\bno\s+more\s+than\s+(\d+\.?\d*)', q)
+    # ── Range patterns (must come BEFORE single-number patterns) ──────────
+    # "76-77°F", "76 - 77°F", "76°F - 77°F", "76°F-77°F", "76 to 77°F"
+    m = re.search(
+        r'(\d+\.?\d*)\s*°?\s*[fc]?\s*(?:-|–|—|to)\s*(\d+\.?\d*)\s*°?\s*[fc]?',
+        q)
     if m:
-        return {"min_c": None, "max_c": to_c(float(m.group(1)))}
-    m = re.search(r'\bbetween\s+(\d+\.?\d*)\s+and\s+(\d+\.?\d*)', q)
+        a, b = float(m.group(1)), float(m.group(2))
+        if a <= b:
+            return {"min_c": to_c(a), "max_c": to_c(b)}
+
+    # "between X and Y"
+    m = re.search(r'between\s+(\d+\.?\d*)\s+and\s+(\d+\.?\d*)', q)
     if m:
         return {"min_c": to_c(float(m.group(1))), "max_c": to_c(float(m.group(2)))}
-    m = re.search(r'(?:above|exceed[s]?|over|higher than|at least|more than|reach)\s+(\d+\.?\d*)', q)
+
+    # ── Lower-bound patterns ──────────────────────────────────────────────
+    # "85+", "85°F+"
+    m = re.search(r'(\d+\.?\d*)\s*°?\s*[fc]?\s*\+', q)
     if m:
         return {"min_c": to_c(float(m.group(1))), "max_c": None}
+    # "85°F or above/more/higher"
+    m = re.search(
+        r'(\d+\.?\d*)\s*°?\s*[fc]?\s+or\s+(?:above|more|higher|greater|over|hotter)',
+        q)
+    if m:
+        return {"min_c": to_c(float(m.group(1))), "max_c": None}
+    # "above 85", "exceeds 85", "higher than 85"
+    m = re.search(
+        r'(?:above|exceed[s]?|over|higher than|at least|more than|reach(?:es)?)\s+(\d+\.?\d*)',
+        q)
+    if m:
+        return {"min_c": to_c(float(m.group(1))), "max_c": None}
+
+    # ── Upper-bound patterns ──────────────────────────────────────────────
+    # "75°F or below/less/lower/under/cooler"
+    m = re.search(
+        r'(\d+\.?\d*)\s*°?\s*[fc]?\s+or\s+(?:below|less|lower|under|cooler|cold)',
+        q)
+    if m:
+        return {"min_c": None, "max_c": to_c(float(m.group(1)))}
+    # "below 75", "under 75", "less than 75"
     m = re.search(r'(?:below|under|less than|not exceed)\s+(\d+\.?\d*)', q)
     if m:
         return {"min_c": None, "max_c": to_c(float(m.group(1)))}
+    # "no more than 75"
+    m = re.search(r'no\s+more\s+than\s+(\d+\.?\d*)', q)
+    if m:
+        return {"min_c": None, "max_c": to_c(float(m.group(1)))}
+
     return None
 
 
@@ -739,8 +743,52 @@ def fetch_poly_event(slug: str) -> dict:
     return events[0]
 
 
+def _fetch_event_full(slug: str) -> dict | None:
+    """Same as fetch_poly_event but returns None on failure (for batching)."""
+    if not slug:
+        return None
+    try:
+        return fetch_poly_event(slug)
+    except Exception:
+        return None
+
+
+def _search_event_slugs(query: str, limit: int = 50) -> set:
+    """Get event slugs matching query (lightweight metadata only)."""
+    slugs: set[str] = set()
+    try:
+        r = requests.get(f"{POLYMARKET}/events", params={
+            "q": query, "active": "true", "closed": "false", "limit": limit},
+            timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        for e in (data if isinstance(data, list) else data.get("data", [])):
+            if e.get("slug"):
+                slugs.add(e["slug"])
+    except Exception:
+        pass
+    return slugs
+
+
 @st.cache_data(ttl=300)
 def search_poly_city(city_name: str) -> list:
+    """
+    Search Polymarket for events matching a city, then fetch each event's
+    full data (with markets[]) — the search endpoint alone returns events
+    with empty markets[].
+    """
+    slugs = _search_event_slugs(city_name, limit=50)
+    full = []
+    for slug in slugs:
+        ev = _fetch_event_full(slug)
+        if ev:
+            full.append(ev)
+    return full
+
+
+@st.cache_data(ttl=300)
+def _legacy_search_events_only(city_name: str) -> list:
+    """Fallback path retained for diagnostics."""
     r = requests.get(f"{POLYMARKET}/events",
                      params={"q": city_name, "active": "true", "closed": "false", "limit": 50},
                      timeout=10)
@@ -1048,11 +1096,29 @@ def render_metar(metar: dict, station_name: str):
                 wind_label,
                 help=wind_help
             )
+        # Visibility can be "10+", "10", "1/4", etc. — handle gracefully
+        def _fmt_vis(v):
+            if v is None or v == "":
+                return "—"
+            s = str(v).strip()
+            if s.endswith("+"):
+                return f"≥{s[:-1]} sm"
+            if "/" in s:
+                try:
+                    p = s.split("/")
+                    return f"{float(p[0])/float(p[1]):.2f} sm"
+                except Exception:
+                    return f"{s} sm"
+            try:
+                return f"{float(s):.0f} sm"
+            except (ValueError, TypeError):
+                return f"{s} sm"
+
         with c5:
             st.metric(
                 "Visibility",
-                f"{float(vis):.0f} sm" if vis else "—",
-                help="Statute miles (sm). 10 sm = standard clear visibility"
+                _fmt_vis(vis),
+                help="Statute miles (sm). 10+ sm = standard clear visibility"
             )
 
         if ts:
@@ -1344,11 +1410,32 @@ def render_markets(markets: list):
 
 # ── Main analysis flow ────────────────────────────────────────────────────────
 
+def _polymarket_search_term(user_input: str, station: dict | None) -> str:
+    """
+    Decide what to send to Polymarket search.
+    User typed ICAO directly (e.g. KBKF) → look up city alias from DB.
+    User typed alias (e.g. 'denver')    → use as-is.
+    """
+    s = user_input.strip()
+    if station and re.match(r'^[A-Z]{4}$', s.upper()):
+        db = load_stations_db()
+        entry = db.get(s.upper(), {})
+        aliases = entry.get("polymarket_aliases", [])
+        if aliases:
+            return aliases[0]
+        if entry.get("city"):
+            return entry["city"]
+    return s
+
+
 def run_analysis(city_input: str, date_str: str, markets_override=None):
+    original_input = city_input
     # 1. Try to resolve as Polymarket airport station first
     station = None
     with st.spinner("Resolving station…"):
         station = resolve_station(city_input)
+
+    poly_search_term = _polymarket_search_term(original_input, station)
 
     if station:
         location = {
@@ -1427,11 +1514,15 @@ def run_analysis(city_input: str, date_str: str, markets_override=None):
         markets = markets_override
     else:
         markets = []
-        with st.spinner("Searching Polymarket…"):
+        with st.spinner(f"Searching Polymarket for '{poly_search_term}'…"):
             try:
-                events = search_poly_city(location["name"])
-                short  = " ".join(location["name"].split()[:2])
-                markets = parse_markets(events, short)
+                events  = search_poly_city(poly_search_term)
+                # Filter by user-friendly term (city), not ICAO
+                fltr    = " ".join(poly_search_term.split()[:2]).lower()
+                markets = parse_markets(events, fltr)
+                if not markets and events:
+                    # Loose retry: no city filter
+                    markets = parse_markets(events)
             except Exception as e:
                 st.warning(f"Polymarket search failed: {e}. Use the URL tab for direct lookup.")
 
