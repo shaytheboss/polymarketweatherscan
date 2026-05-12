@@ -42,16 +42,69 @@ def get_app() -> Application:
     return _app
 
 
-async def send_opportunity_alert(opportunity, db) -> None:
-    """Send an OPPORTUNITY_DETECTED alert to all subscribed users."""
-    if not settings.telegram_bot_token:
-        logger.warning("No Telegram token configured — skipping alert")
+async def _open_paper_trade(db, opportunity) -> None:
+    """
+    Open a paper trade for an opportunity if one doesn't already exist.
+    Idempotent on opportunity_id thanks to the unique constraint.
+    """
+    from sqlalchemy import select
+    from app.models.market import MarketOutcome, Market
+    from app.models.paper_trade import PaperTrade
+
+    existing = await db.execute(
+        select(PaperTrade.id).where(PaperTrade.opportunity_id == opportunity.id)
+    )
+    if existing.scalar_one_or_none() is not None:
         return
 
+    outcome_q = await db.execute(
+        select(MarketOutcome).where(MarketOutcome.id == opportunity.outcome_id)
+    )
+    outcome = outcome_q.scalar_one_or_none()
+    if not outcome:
+        return
+    market_q = await db.execute(select(Market).where(Market.id == outcome.market_id))
+    market = market_q.scalar_one_or_none()
+    if not market:
+        return
+
+    trade = PaperTrade(
+        opportunity_id=opportunity.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        city_id=market.city_id,
+        side=opportunity.side,
+        entry_price=opportunity.market_price,
+        estimated_true_prob=opportunity.estimated_true_prob,
+        edge_at_entry=opportunity.edge,
+        confidence_at_entry=opportunity.confidence_score,
+        size_usd=settings.paper_trade_default_size_usd,
+        signals_snapshot=opportunity.signals,
+    )
+    db.add(trade)
+    await db.commit()
+    logger.info(
+        f"Paper trade opened: opp={opportunity.id} side={opportunity.side} "
+        f"entry={float(opportunity.market_price):.3f} "
+        f"size=${settings.paper_trade_default_size_usd:.0f}"
+    )
+
+
+async def send_opportunity_alert(opportunity, db) -> None:
+    """Send an OPPORTUNITY_DETECTED alert to all subscribed users."""
     from sqlalchemy import select
     from app.models.alert import TelegramUser, Alert
     from app.models.market import MarketOutcome, Market
     from app.models.city import City
+    from app.models.paper_trade import PaperTrade
+
+    # Record the paper-trade up front so that even if Telegram delivery
+    # fails we still have the simulated entry on record.
+    await _open_paper_trade(db, opportunity)
+
+    if not settings.telegram_bot_token:
+        logger.warning("No Telegram token configured — paper trade recorded, alert skipped")
+        return
 
     outcome_result = await db.execute(
         select(MarketOutcome).where(MarketOutcome.id == opportunity.outcome_id)

@@ -5,6 +5,7 @@ from app.models.pirep import Pirep
 from app.models.market import Market, MarketOutcome, MarketPrice
 from app.models.opportunity import Opportunity
 from app.models.alert import Alert, TelegramUser
+from app.models.paper_trade import PaperTrade
 
 __all__ = [
     "City",
@@ -17,4 +18,5 @@ __all__ = [
     "Opportunity",
     "Alert",
     "TelegramUser",
+    "PaperTrade",
 ]

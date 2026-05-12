@@ -28,7 +28,9 @@ class Settings(BaseSettings):
     metar_fetch_interval: int = 300
     polymarket_fetch_interval: int = 30
     wunderground_fetch_interval: int = 1800
+    ensemble_fetch_interval: int = 3600
     analyzer_run_interval: int = 120
+    paper_trade_default_size_usd: float = 100.0
 
     # Alert thresholds
     min_confidence_for_alert: int = 60

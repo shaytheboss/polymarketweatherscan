@@ -65,12 +65,54 @@ ICAO_DATA = {
         "timezone": "America/New_York",
         "wunderground_url": "https://www.wunderground.com/weather/us/fl/miami",
     },
+    # Denver — Polymarket Denver markets resolve off Buckley SFB (KBKF).
+    "KBKF": {
+        "name": "Buckley Space Force Base",
+        "lat": 39.7017,
+        "lon": -104.7517,
+        "timezone": "America/Denver",
+        "suggested_reference": "KDEN",
+        "wunderground_url": "https://www.wunderground.com/weather/us/co/denver",
+    },
+    "KDEN": {
+        "name": "Denver Intl",
+        "lat": 39.8561,
+        "lon": -104.6737,
+        "timezone": "America/Denver",
+    },
+    # Boston
+    "KBOS": {
+        "name": "Boston Logan Intl",
+        "lat": 42.3656,
+        "lon": -71.0096,
+        "timezone": "America/New_York",
+        "suggested_reference": "KBED",
+        "wunderground_url": "https://www.wunderground.com/weather/us/ma/boston",
+    },
+    # Austin
+    "KAUS": {
+        "name": "Austin-Bergstrom Intl",
+        "lat": 30.1945,
+        "lon": -97.6699,
+        "timezone": "America/Chicago",
+        "wunderground_url": "https://www.wunderground.com/weather/us/tx/austin",
+    },
+    # Phoenix
+    "KPHX": {
+        "name": "Phoenix Sky Harbor",
+        "lat": 33.4343,
+        "lon": -112.0080,
+        "timezone": "America/Phoenix",
+        "wunderground_url": "https://www.wunderground.com/weather/us/az/phoenix",
+    },
 }
 
 BUOY_NEAREST = {
     "KSFO": "46026",   # San Francisco buoy
     "KLAX": "46025",   # Santa Monica Basin buoy
     "KJFK": "44025",   # NY/NJ Harbor buoy
+    "KBOS": "44013",   # Boston Approach
+    "KMIA": "41114",   # Fort Pierce
 }
 
 

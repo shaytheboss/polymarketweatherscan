@@ -44,38 +44,69 @@ def _clip(p: float, lo: float = 0.01, hi: float = 0.99) -> float:
     return max(lo, min(hi, p))
 
 
+def _empirical_bucket_prob(
+    members: Optional[list], bucket_min: Optional[int], bucket_max: Optional[int]
+) -> Optional[float]:
+    """Fraction of ensemble members whose daily high lands in the bucket."""
+    if not members:
+        return None
+    if bucket_min is None and bucket_max is None:
+        return None
+    lo = bucket_min - 0.5 if bucket_min is not None else float("-inf")
+    hi = bucket_max + 0.5 if bucket_max is not None else float("inf")
+    n = len(members)
+    if n == 0:
+        return None
+    return sum(1 for v in members if lo <= v < hi) / n
+
+
 def estimate_true_probability(signals: dict, bucket_min: Optional[int], bucket_max: Optional[int]) -> float:
     """
     Weighted ensemble estimator.
     Combines forecasts, model data, METAR trends, reference-station signals,
     and PIREP data into a single probability estimate for the bucket.
+
+    When per-member ensemble data is present, the empirical bucket fraction
+    becomes the dominant signal — it's a direct estimate of P(bucket).
     """
 
     # --- Baseline from Wunderground forecast ---
     wg = signals.get("wunderground_forecast") or {}
     p = _forecast_implied_prob(wg.get("predicted_high_f"), bucket_min, bucket_max)
 
-    # --- Model consensus adjustment ---
-    gfs = signals.get("gfs_forecast") or {}
-    ecmwf = signals.get("ecmwf_forecast") or {}
-    gfs_high = gfs.get("predicted_high_f")
-    ecmwf_high = ecmwf.get("predicted_high_f")
+    # --- Empirical ensemble probability (if available) ---
+    ens_members = []
+    for key in ("ensemble_gfs", "ensemble_ecmwf"):
+        m = (signals.get(key) or {}).get("members_high_f") or []
+        ens_members.extend(m)
 
-    model_probs = []
-    if gfs_high is not None:
-        model_probs.append(_forecast_implied_prob(gfs_high, bucket_min, bucket_max))
-    if ecmwf_high is not None:
-        model_probs.append(_forecast_implied_prob(ecmwf_high, bucket_min, bucket_max))
+    ens_p = _empirical_bucket_prob(ens_members, bucket_min, bucket_max)
+    if ens_p is not None:
+        # Blend heavily toward the empirical signal but add Laplace smoothing
+        # so a 0/N or N/N member count doesn't collapse to certainty.
+        n = len(ens_members)
+        smoothed = (ens_p * n + 0.5) / (n + 1)
+        p = 0.20 * p + 0.80 * smoothed
+    else:
+        # --- Deterministic model consensus (only when no ensemble signal) ---
+        gfs = signals.get("gfs_forecast") or {}
+        ecmwf = signals.get("ecmwf_forecast") or {}
+        gfs_high = gfs.get("predicted_high_f")
+        ecmwf_high = ecmwf.get("predicted_high_f")
 
-    if model_probs:
-        model_p = sum(model_probs) / len(model_probs)
-        models_agree = len(model_probs) == 2 and abs(model_probs[0] - model_probs[1]) < 0.15
-        if models_agree:
-            # High confidence in models
-            p = 0.35 * p + 0.65 * model_p
-        else:
-            # Models disagree — blend more conservatively
-            p = 0.55 * p + 0.45 * model_p
+        model_probs = []
+        if gfs_high is not None:
+            model_probs.append(_forecast_implied_prob(gfs_high, bucket_min, bucket_max))
+        if ecmwf_high is not None:
+            model_probs.append(_forecast_implied_prob(ecmwf_high, bucket_min, bucket_max))
+
+        if model_probs:
+            model_p = sum(model_probs) / len(model_probs)
+            models_agree = len(model_probs) == 2 and abs(model_probs[0] - model_probs[1]) < 0.15
+            if models_agree:
+                p = 0.35 * p + 0.65 * model_p
+            else:
+                p = 0.55 * p + 0.45 * model_p
 
     # --- Current METAR trend adjustment ---
     trend = signals.get("metar_trend") or {}

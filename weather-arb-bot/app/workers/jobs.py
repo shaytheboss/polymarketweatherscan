@@ -11,10 +11,12 @@ from app.collectors.metar_collector import MetarCollector
 from app.collectors.wunderground_collector import WundergroundCollector
 from app.collectors.nws_collector import NWSCollector
 from app.collectors.gfs_collector import GFSCollector
+from app.collectors.ensemble_collector import EnsembleCollector
 from app.collectors.pirep_collector import PirepCollector
 from app.collectors.polymarket_collector import PolymarketCollector
 from app.analyzers.opportunity_detector import detect_opportunities
 from app.bot.telegram_bot import send_opportunity_alert
+from app.utils.icao_lookup import lookup_icao
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +24,7 @@ metar_col = MetarCollector()
 wunder_col = WundergroundCollector()
 nws_col = NWSCollector()
 gfs_col = GFSCollector()
+ensemble_col = EnsembleCollector()
 pirep_col = PirepCollector()
 poly_col = PolymarketCollector()
 
@@ -85,6 +88,35 @@ async def job_fetch_models():
                     await gfs_col.collect_and_store(city.id, lat, lon, today, db, model)
                 except Exception as e:
                     logger.error(f"{model} job failed for {city.name}: {e}")
+
+
+async def job_fetch_ensemble():
+    """
+    Fetch Open-Meteo Ensemble forecasts (GFS + ECMWF) for active cities.
+    Uses the primary ICAO's coordinates and timezone — markets resolve at the
+    station, not the city centroid, so the ensemble must be queried there.
+    """
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(City).where(City.active == True))
+        cities = result.scalars().all()
+        today = date.today()
+        for city in cities:
+            meta = lookup_icao(city.primary_icao)
+            if meta:
+                lat, lon = meta["lat"], meta["lon"]
+                tz_name = meta.get("timezone") or city.timezone or "UTC"
+            elif city.nws_lat is not None and city.nws_lon is not None:
+                lat, lon = float(city.nws_lat), float(city.nws_lon)
+                tz_name = city.timezone or "UTC"
+            else:
+                continue
+            for model in ("gfs", "ecmwf"):
+                try:
+                    await ensemble_col.collect_and_store(
+                        city.id, lat, lon, today, db, model=model, tz_name=tz_name
+                    )
+                except Exception as e:
+                    logger.error(f"Ensemble {model} job failed for {city.name}: {e}")
 
 
 async def job_fetch_pireps():

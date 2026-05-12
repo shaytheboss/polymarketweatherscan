@@ -47,6 +47,10 @@ class SignalAggregator:
         signals["gfs_forecast"] = await self._latest_forecast(db, city_id, "gfs")
         signals["ecmwf_forecast"] = await self._latest_forecast(db, city_id, "ecmwf")
 
+        # Ensemble forecasts (carry the per-member distribution)
+        signals["ensemble_gfs"] = await self._latest_forecast(db, city_id, "ensemble_gfs")
+        signals["ensemble_ecmwf"] = await self._latest_forecast(db, city_id, "ensemble_ecmwf")
+
         # Recent PIREPs near primary station
         signals["pireps"] = await self._recent_pireps(db, primary_icao, hours=2)
 
@@ -125,12 +129,28 @@ class SignalAggregator:
         row = result.scalar_one_or_none()
         if not row:
             return None
-        return {
+        out = {
             "predicted_high_f": row.predicted_high_f,
             "predicted_low_f": row.predicted_low_f,
             "conditions": row.conditions,
             "retrieved_at": row.retrieved_at.isoformat(),
         }
+        # Ensemble rows carry the per-member distribution in raw_data; pass it
+        # through so the probability estimator can read it directly.
+        if row.raw_data and source.startswith("ensemble"):
+            raw = row.raw_data
+            out.update(
+                {
+                    "members_high_f": raw.get("members_high_f"),
+                    "mean_high_f": raw.get("mean_high_f"),
+                    "median_high_f": raw.get("median_high_f"),
+                    "stdev_high_f": raw.get("stdev_high_f"),
+                    "p10_high_f": raw.get("p10_high_f"),
+                    "p90_high_f": raw.get("p90_high_f"),
+                    "num_members": raw.get("num_members"),
+                }
+            )
+        return out
 
     async def _recent_pireps(
         self, db: AsyncSession, icao: str, hours: int = 2

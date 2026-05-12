@@ -15,6 +15,7 @@ from app.workers.jobs import (
     job_fetch_wunderground,
     job_fetch_nws,
     job_fetch_models,
+    job_fetch_ensemble,
     job_fetch_pireps,
     job_fetch_polymarket,
     job_run_analyzer,
@@ -59,6 +60,14 @@ def build_scheduler() -> AsyncIOScheduler:
         IntervalTrigger(seconds=3600),
         id="models",
         name="Fetch GFS/ECMWF model data",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        job_fetch_ensemble,
+        IntervalTrigger(seconds=settings.ensemble_fetch_interval),
+        id="ensemble",
+        name="Fetch Open-Meteo ensemble forecasts",
         max_instances=1,
         misfire_grace_time=600,
     )

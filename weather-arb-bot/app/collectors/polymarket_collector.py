@@ -17,6 +17,17 @@ GAMMA_API_BASE = "https://gamma-api.polymarket.com"
 class PolymarketCollector(BaseCollector):
     name = "polymarket"
 
+    async def collect(self, token_id: str) -> Optional[dict]:
+        """
+        Fetch the current mid-market price for a single token.
+        Implements ``BaseCollector.collect`` so the class is instantiable.
+        """
+        prices = await self.get_prices([token_id])
+        if not prices or token_id not in prices:
+            return None
+        yes_price = float(prices[token_id])
+        return {"token_id": token_id, "yes_price": yes_price, "no_price": round(1.0 - yes_price, 4)}
+
     async def get_market(self, market_id: str) -> Optional[dict]:
         """Fetch market metadata from Gamma API."""
         try:

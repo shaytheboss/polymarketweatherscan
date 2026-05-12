@@ -1,9 +1,9 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 
 from app.analyzers.signal_aggregator import SignalAggregator
 from app.analyzers.probability_estimator import estimate_true_probability
@@ -98,6 +98,15 @@ async def _analyze_outcome(
     if best_edge < req_edge or confidence < settings.min_confidence_for_alert:
         return None
 
+    # Dedup: don't fire again on the same (outcome, side) within the
+    # cooldown window. A previously-detected opportunity that's still open
+    # counts — the price drifted but we already alerted.
+    if await _has_recent_opportunity(db, outcome.id, best_side):
+        logger.debug(
+            f"Suppressed duplicate opportunity outcome={outcome.id} side={best_side}"
+        )
+        return None
+
     logger.info(
         f"Opportunity found: outcome {outcome.id} "
         f"side={best_side} price={yes_price:.2f} "
@@ -120,3 +129,22 @@ async def _analyze_outcome(
     await db.commit()
     await db.refresh(opp)
     return opp
+
+
+async def _has_recent_opportunity(
+    db: AsyncSession, outcome_id: int, side: str
+) -> bool:
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        minutes=settings.alert_dedup_minutes
+    )
+    result = await db.execute(
+        select(Opportunity.id)
+        .where(
+            Opportunity.outcome_id == outcome_id,
+            Opportunity.side == side,
+            Opportunity.detected_at >= cutoff,
+        )
+        .order_by(desc(Opportunity.detected_at))
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
