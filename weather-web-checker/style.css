@@ -303,6 +303,76 @@ input::placeholder { color: var(--text-muted); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Ensemble card ────────────────────────────────────────────────────────── */
+.ensemble-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  min-width: 80px;
+}
+
+.stat-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.stat-value {
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text);
+  margin-top: 3px;
+}
+
+.ensemble-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 480px;
+  font-size: 0.875rem;
+}
+
+.ensemble-table th {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.ensemble-table td {
+  padding: 5px 12px;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+  vertical-align: middle;
+}
+
+.ensemble-table tr:last-child td { border-bottom: none; }
+.ensemble-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+.ens-temp   { font-family: var(--font-mono); font-size: 0.82rem; white-space: nowrap; }
+.ens-temp-f { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); white-space: nowrap; }
+.ens-count  { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); text-align: center; }
+.ens-prob   { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 700; text-align: right; min-width: 52px; }
+
+.ens-bar-cell { padding: 5px 12px 5px 8px; }
+.ens-bar {
+  height: 12px;
+  background: linear-gradient(90deg, var(--accent), #6fc0ff);
+  border-radius: 2px;
+  min-width: 2px;
+}
+
 /* ── Responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .form-grid {

@@ -7,7 +7,34 @@
 const API = {
   geocode:    'https://geocoding-api.open-meteo.com/v1/search',
   forecast:   'https://api.open-meteo.com/v1/forecast',
+  ensemble:   'https://ensemble-api.open-meteo.com/v1/ensemble',
   polymarket: 'https://gamma-api.polymarket.com',
+};
+
+// Exact ICAO station coordinates for cities where Polymarket uses a specific
+// weather station (often not the city center). Keyed by ICAO code.
+const POLYMARKET_STATIONS = {
+  KBKF: { lat: 39.7169, lon: -104.7519, city: 'Denver',         state: 'CO', aliases: ['denver'] },
+  KMDW: { lat: 41.7868, lon:  -87.7522, city: 'Chicago',        state: 'IL', aliases: ['chicago'] },
+  KORD: { lat: 41.9742, lon:  -87.9073, city: 'Chicago',        state: 'IL', aliases: [] },
+  KLGA: { lat: 40.7773, lon:  -73.8726, city: 'New York',       state: 'NY', aliases: ['new york', 'nyc', 'new york city'] },
+  KJFK: { lat: 40.6413, lon:  -73.7781, city: 'New York',       state: 'NY', aliases: [] },
+  KSFO: { lat: 37.6189, lon: -122.3750, city: 'San Francisco',  state: 'CA', aliases: ['san francisco', 'sf'] },
+  KLAX: { lat: 33.9416, lon: -118.4085, city: 'Los Angeles',    state: 'CA', aliases: ['los angeles', 'la'] },
+  KMIA: { lat: 25.7959, lon:  -80.2870, city: 'Miami',          state: 'FL', aliases: ['miami'] },
+  KHOU: { lat: 29.6454, lon:  -95.2789, city: 'Houston',        state: 'TX', aliases: ['houston'] },
+  KIAH: { lat: 29.9844, lon:  -95.3414, city: 'Houston',        state: 'TX', aliases: [] },
+  KPHX: { lat: 33.4343, lon: -112.0078, city: 'Phoenix',        state: 'AZ', aliases: ['phoenix'] },
+  KSEA: { lat: 47.4502, lon: -122.3088, city: 'Seattle',        state: 'WA', aliases: ['seattle'] },
+  KATL: { lat: 33.6407, lon:  -84.4277, city: 'Atlanta',        state: 'GA', aliases: ['atlanta'] },
+  KBOS: { lat: 42.3629, lon:  -71.0064, city: 'Boston',         state: 'MA', aliases: ['boston'] },
+  KDAL: { lat: 32.8470, lon:  -96.8517, city: 'Dallas',         state: 'TX', aliases: ['dallas'] },
+  KDFW: { lat: 32.8998, lon:  -97.0403, city: 'Dallas',         state: 'TX', aliases: [] },
+  KDEN: { lat: 39.8561, lon: -104.6737, city: 'Denver',         state: 'CO', aliases: [] },
+  KLAS: { lat: 36.0840, lon: -115.1537, city: 'Las Vegas',      state: 'NV', aliases: ['las vegas'] },
+  KMCO: { lat: 28.4294, lon:  -81.3089, city: 'Orlando',        state: 'FL', aliases: ['orlando'] },
+  KDCA: { lat: 38.8521, lon:  -77.0377, city: 'Washington DC',  state: 'DC', aliases: ['washington', 'dc', 'washington dc'] },
+  KIAD: { lat: 38.9531, lon:  -77.4565, city: 'Washington DC',  state: 'VA', aliases: [] },
 };
 
 // Public CORS proxy fallbacks — used only if direct fetch fails
@@ -256,6 +283,34 @@ function parseCityFromSlug(slug) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Station helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Extract ICAO station code from a Weather Underground URL embedded in text.
+ * e.g. "https://www.wunderground.com/history/daily/us/co/aurora/KBKF" → "KBKF"
+ */
+function extractIcaoFromWunderground(text) {
+  if (!text) return null;
+  const m = text.match(/wunderground\.com\/history\/daily\/[^/]+\/[^/]+\/[^/]+\/([A-Z]{4})\b/);
+  return m ? m[1] : null;
+}
+
+/**
+ * Look up a city name in POLYMARKET_STATIONS by alias or city name.
+ * Returns { icao, station } or null.
+ */
+function lookupStationByCity(cityName) {
+  const lower = cityName.toLowerCase().trim();
+  for (const [icao, st] of Object.entries(POLYMARKET_STATIONS)) {
+    if (st.city.toLowerCase() === lower || st.aliases.includes(lower)) {
+      return { icao, station: st };
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Geocoding
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -360,6 +415,113 @@ async function fetchModelWithFallback(lat, lon, dateStr, model) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Ensemble forecast
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ENSEMBLE_MODELS = [
+  { id: 'ecmwf_ifs04',  label: 'ECMWF IFS Ensemble 0.4°', members: 51 },
+  { id: 'icon_global',  label: 'ICON Global Ensemble',     members: 40 },
+  { id: 'gfs025',       label: 'GFS 0.25° Ensemble',       members: 31 },
+];
+
+/**
+ * Fetch ensemble daily max temperatures for a single date.
+ * Tries ECMWF → ICON → GFS in order; returns first success.
+ * Returns { members: number[], modelId, memberCount } or null.
+ */
+async function fetchEnsembleForecast(lat, lon, dateStr) {
+  for (const em of ENSEMBLE_MODELS) {
+    try {
+      const url = new URL(API.ensemble);
+      const params = {
+        latitude: lat,
+        longitude: lon,
+        daily: 'temperature_2m_max',
+        models: em.id,
+        start_date: dateStr,
+        end_date: dateStr,
+        timezone: 'auto',
+      };
+      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)));
+
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const body = await resp.text().catch(() => '');
+        throw new Error(`HTTP ${resp.status}${body ? ': ' + body.slice(0, 100) : ''}`);
+      }
+      const data = await resp.json();
+      if (data.error) throw new Error(data.reason || 'API error');
+
+      const daily = data.daily || {};
+      const times = daily.time || [];
+      const idx = times.indexOf(dateStr);
+      if (idx === -1) throw new Error(`Date ${dateStr} not in ensemble window`);
+
+      const members = [];
+      for (const [key, values] of Object.entries(daily)) {
+        if (key.startsWith('temperature_2m_max_member') && Array.isArray(values)) {
+          const v = values[idx];
+          if (v != null) members.push(Math.round(v * 10) / 10);
+        }
+      }
+      if (!members.length) throw new Error('No member data in response');
+
+      return { members, modelId: em.id, modelLabel: em.label, memberCount: members.length };
+    } catch (e) {
+      console.warn(`[ensemble:${em.id}] ${e.message}`);
+    }
+  }
+  return null;
+}
+
+/**
+ * Build probability distribution from ensemble members.
+ * Returns percentiles, mean, stddev, and 1°C histogram bins.
+ */
+function buildEnsembleDistribution(members) {
+  if (!members || !members.length) return null;
+  const sorted = [...members].sort((a, b) => a - b);
+  const n = sorted.length;
+
+  const mean = sorted.reduce((s, v) => s + v, 0) / n;
+  const variance = sorted.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+  const stddev = Math.sqrt(variance);
+
+  const pct = p => {
+    const i = (p / 100) * (n - 1);
+    const lo = Math.floor(i), hi = Math.ceil(i);
+    return lo === hi ? sorted[lo] : sorted[lo] + (i - lo) * (sorted[hi] - sorted[lo]);
+  };
+
+  const minBin = Math.floor(sorted[0]);
+  const maxBin = Math.ceil(sorted[n - 1]);
+  const bins = [];
+  for (let t = minBin; t <= maxBin; t++) {
+    const count = members.filter(v => v >= t && v < t + 1).length;
+    if (count > 0) {
+      bins.push({
+        tempC: t,
+        tempF: Math.round((t * 9 / 5 + 32) * 10) / 10,
+        count,
+        prob: count / n,
+      });
+    }
+  }
+
+  return {
+    mean:   Math.round(mean   * 10) / 10,
+    stddev: Math.round(stddev * 10) / 10,
+    p10:    Math.round(pct(10)  * 10) / 10,
+    p25:    Math.round(pct(25)  * 10) / 10,
+    p50:    Math.round(pct(50)  * 10) / 10,
+    p75:    Math.round(pct(75)  * 10) / 10,
+    p90:    Math.round(pct(90)  * 10) / 10,
+    bins,
+    n,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Polymarket market fetching and parsing
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -456,7 +618,7 @@ function slugFromPolymarketUrl(raw) {
 // Core analysis pipeline
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildAnalysis(location, dateStr, modelResults, markets) {
+function buildAnalysis(location, dateStr, modelResults, markets, ensemble = null) {
   const validForecasts = modelResults.filter(r => r.maxC != null);
   const allMaxC = validForecasts.map(r => r.maxC);
   const consensusC = allMaxC.length
@@ -479,20 +641,40 @@ function buildAnalysis(location, dateStr, modelResults, markets) {
     return { ...m, modelProb, edge, perModelProbs };
   });
 
-  return { location, dateStr, models: modelResults, consensusC, consensusF, markets: marketsWithEdge };
+  return { location, dateStr, models: modelResults, consensusC, consensusF, markets: marketsWithEdge, ensemble };
 }
 
 async function analyzeByCity(cityInput, dateStr) {
   validateDate(dateStr);
   const location = await geocodeCity(cityInput);
-  const [modelResults, markets] = await Promise.all([
+
+  // If this city maps to a known Polymarket ICAO station, use exact coordinates
+  const stLookup = lookupStationByCity(cityInput);
+  if (stLookup) {
+    const { icao, station } = stLookup;
+    location.lat = station.lat;
+    location.lon = station.lon;
+    location.icao = icao;
+    location.displayName += ` (station ${icao})`;
+  }
+
+  const [modelResults, markets, ensembleRaw] = await Promise.all([
     Promise.all(MODELS.map(m => fetchModelWithFallback(location.lat, location.lon, dateStr, m))),
     searchPolymarketByCity(location.name).catch(e => {
       console.warn('Polymarket search failed:', e.message);
       return [{ _error: e.message }];
     }),
+    fetchEnsembleForecast(location.lat, location.lon, dateStr).catch(e => {
+      console.warn('Ensemble fetch failed:', e.message);
+      return null;
+    }),
   ]);
-  return buildAnalysis(location, dateStr, modelResults, markets);
+
+  const ensemble = ensembleRaw
+    ? { ...ensembleRaw, dist: buildEnsembleDistribution(ensembleRaw.members) }
+    : null;
+
+  return buildAnalysis(location, dateStr, modelResults, markets, ensemble);
 }
 
 async function analyzeByUrl(rawUrl) {
@@ -525,13 +707,43 @@ async function analyzeByUrl(rawUrl) {
   if (!city) throw new Error(`Could not extract city from market question: "${markets[0].question}". Use the "By City" tab instead.`);
   if (!dateStr) throw new Error(`Could not extract date from market question: "${markets[0].question}". Use the "By City" tab instead.`);
 
-  const location = await geocodeCity(city);
+  // Try to resolve the exact ICAO station Polymarket uses (embedded as a
+  // Weather Underground URL in the event description).
+  const icao = extractIcaoFromWunderground(event.description || '');
+  let location;
+  if (icao && POLYMARKET_STATIONS[icao]) {
+    const st = POLYMARKET_STATIONS[icao];
+    location = {
+      lat: st.lat,
+      lon: st.lon,
+      name: city,
+      admin: st.state || '',
+      country: 'US',
+      countryCode: 'US',
+      timezone: 'auto',
+      displayName: `${city} (${icao} — ${st.city}, ${st.state})`,
+      icao,
+    };
+  } else {
+    location = await geocodeCity(city);
+    if (icao) location.icao = icao; // store even if not in table
+  }
+
   // Date might be far in the future (Polymarket markets can be months ahead).
   // Attempt forecast anyway; Open-Meteo will return an error if out of range.
-  const modelResults = await Promise.all(
-    MODELS.map(m => fetchModelWithFallback(location.lat, location.lon, dateStr, m))
-  );
-  return buildAnalysis(location, dateStr, modelResults, markets);
+  const [modelResults, ensembleRaw] = await Promise.all([
+    Promise.all(MODELS.map(m => fetchModelWithFallback(location.lat, location.lon, dateStr, m))),
+    fetchEnsembleForecast(location.lat, location.lon, dateStr).catch(e => {
+      console.warn('Ensemble fetch failed:', e.message);
+      return null;
+    }),
+  ]);
+
+  const ensemble = ensembleRaw
+    ? { ...ensembleRaw, dist: buildEnsembleDistribution(ensembleRaw.members) }
+    : null;
+
+  return buildAnalysis(location, dateStr, modelResults, markets, ensemble);
 }
 
 function validateDate(dateStr) {
@@ -712,11 +924,65 @@ function formatBucket(bucket) {
   return 'Bucket: —';
 }
 
+function renderEnsembleCard(ensemble) {
+  if (!ensemble || !ensemble.dist) return '';
+
+  const { dist, modelId, modelLabel, memberCount } = ensemble;
+  const toF = c => Math.round((c * 9 / 5 + 32) * 10) / 10;
+
+  const statsHtml = [
+    { label: 'P10',     val: dist.p10 },
+    { label: 'P25',     val: dist.p25 },
+    { label: 'Median',  val: dist.p50 },
+    { label: 'P75',     val: dist.p75 },
+    { label: 'P90',     val: dist.p90 },
+    { label: 'Mean',    val: dist.mean },
+    { label: 'Spread ±', val: dist.stddev, noF: true },
+  ].map(s => `
+    <div class="stat-item">
+      <span class="stat-label">${s.label}</span>
+      <span class="stat-value">${s.val.toFixed(1)}°C${!s.noF ? ` / ${toF(s.val).toFixed(1)}°F` : ''}</span>
+    </div>`).join('');
+
+  const maxProb = Math.max(...dist.bins.map(b => b.prob));
+
+  const rows = dist.bins.map(b => {
+    const barW = maxProb > 0 ? Math.round((b.prob / maxProb) * 100) : 0;
+    const hiF  = Math.round(((b.tempC + 1) * 9 / 5 + 32) * 10) / 10;
+    return `<tr>
+      <td class="ens-temp">${b.tempC}–${b.tempC + 1}°C</td>
+      <td class="ens-temp-f">${b.tempF.toFixed(1)}–${hiF.toFixed(1)}°F</td>
+      <td class="ens-count">${b.count}/${memberCount}</td>
+      <td class="ens-prob">${(b.prob * 100).toFixed(1)}%</td>
+      <td class="ens-bar-cell"><div class="ens-bar" style="width:${barW}%"></div></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <div class="card-label">Ensemble Probability Distribution · ${esc(modelLabel || modelId)} · ${memberCount} members</div>
+      <div class="ensemble-stats">${statsHtml}</div>
+      <div class="table-scroll">
+        <table class="ensemble-table">
+          <thead><tr>
+            <th>Bucket (°C)</th>
+            <th>Bucket (°F)</th>
+            <th>Members</th>
+            <th>Probability</th>
+            <th style="width:160px">Distribution</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
 function renderResults(data) {
   const el = document.getElementById('results');
   el.innerHTML = [
     renderLocationCard(data.location, data.dateStr),
     renderForecastCard(data.models, data.consensusC, data.consensusF),
+    renderEnsembleCard(data.ensemble),
     renderMarketsCard(data.markets, data.models),
   ].join('');
   el.scrollIntoView({ behavior: 'smooth', block: 'start' });
