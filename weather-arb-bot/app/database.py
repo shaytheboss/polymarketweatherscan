@@ -4,7 +4,6 @@ from app.config import settings
 
 
 def _async_url(url: str) -> str:
-    """Convert postgresql:// to postgresql+asyncpg://"""
     if url.startswith("postgresql://"):
         return url.replace("postgresql://", "postgresql+asyncpg://", 1)
     if url.startswith("postgres://"):

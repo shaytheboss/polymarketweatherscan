@@ -4,38 +4,23 @@ import os
 
 
 class Settings(BaseSettings):
-    # Database
     database_url: str = "postgresql://weatherarb:weatherarb@localhost:5432/weatherarb"
-
-    # Redis
     redis_url: Optional[str] = None
-
-    # Telegram
     telegram_bot_token: str = ""
     telegram_webhook_secret: str = ""
-
-    # API Keys
     wunderground_api_key: str = ""
     openweather_api_key: str = ""
     polymarket_api_key: str = ""
-
-    # App
     app_env: str = "development"
     secret_key: str = "changeme"
     cors_origins: str = "http://localhost:3000"
-
-    # Scheduler intervals (seconds)
     metar_fetch_interval: int = 300
     polymarket_fetch_interval: int = 30
     wunderground_fetch_interval: int = 1800
     analyzer_run_interval: int = 120
-
-    # Alert thresholds
     min_confidence_for_alert: int = 60
     min_edge_for_alert: float = 0.15
     alert_dedup_minutes: int = 30
-
-    # Sentry
     sentry_dsn: str = ""
 
     @property
