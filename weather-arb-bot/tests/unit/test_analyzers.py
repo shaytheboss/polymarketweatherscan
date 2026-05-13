@@ -37,7 +37,6 @@ def _base_signals(**overrides) -> dict:
 # ── probability estimator ─────────────────────────────────────────────────────
 
 def test_forecast_in_bucket_raises_prob():
-    # Forecast says 65°F → 64-65 bucket should get high probability
     signals = _base_signals(
         wunderground_forecast={"predicted_high_f": 65},
         gfs_forecast={"predicted_high_f": 64},
@@ -48,7 +47,6 @@ def test_forecast_in_bucket_raises_prob():
 
 
 def test_forecast_outside_bucket_lowers_prob():
-    # Forecast says 70°F → 64-65 bucket should be low
     signals = _base_signals(
         wunderground_forecast={"predicted_high_f": 70},
         gfs_forecast={"predicted_high_f": 71},
@@ -104,11 +102,9 @@ def test_confidence_in_valid_range():
 
 
 def test_supporting_trend_boosts_confidence():
-    # Rising temp trend supports warm bucket
     signals_warm = _base_signals(
         metar_trend={"temp_rate_per_hour": 2.0, "current_temp_f": 64.0, "dew_rate_per_hour": 0.0, "span_hours": 2.0},
     )
-    # Falling temp trend hurts warm bucket
     signals_cool = _base_signals(
         metar_trend={"temp_rate_per_hour": -2.0, "current_temp_f": 64.0, "dew_rate_per_hour": 0.0, "span_hours": 2.0},
     )
