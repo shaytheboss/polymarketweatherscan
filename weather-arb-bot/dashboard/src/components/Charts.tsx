@@ -67,7 +67,6 @@ const BUCKET_COLORS: Record<string, string> = {
 };
 
 export function PriceChart({ data }: PriceChartProps) {
-  // Merge all buckets into a time-keyed map
   const merged: Record<string, Record<string, number>> = {};
   Object.entries(data).forEach(([bucket, rows]) => {
     rows.forEach((r) => {

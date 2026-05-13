@@ -5,7 +5,6 @@ from app.database import Base
 
 class Pirep(Base):
     __tablename__ = "pireps"
-
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     near_icao = Column(String(4), nullable=False)
     observed_at = Column(TIMESTAMP(timezone=True), nullable=False)

@@ -16,20 +16,13 @@ if settings.sentry_dsn:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger.info("Weather Arbitrage Bot starting up...")
     yield
     logger.info("Shutting down...")
 
 
-app = FastAPI(
-    title="Weather Arbitrage Bot",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="Weather Arbitrage Bot", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -19,24 +19,16 @@ aggregator = SignalAggregator()
 
 
 def _required_edge(market_price: float) -> float:
-    """Edge threshold scales with distance from 0.5 — extremes need tighter filter."""
     if 0.30 <= market_price <= 0.70:
         return settings.min_edge_for_alert
-    return settings.min_edge_for_alert * 0.67  # lower bar at extremes
+    return settings.min_edge_for_alert * 0.67
 
 
 async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
-    """
-    Main entry point: scan all active markets and detect arbitrage opportunities.
-    Returns a list of newly saved Opportunity objects.
-    """
     found: List[Opportunity] = []
 
-    # Load active markets with their outcomes
     result = await db.execute(
-        select(Market)
-        .where(Market.resolved == False)
-        .order_by(Market.event_date)
+        select(Market).where(Market.resolved == False).order_by(Market.event_date)
     )
     markets: List[Market] = result.scalars().all()
 
@@ -57,53 +49,33 @@ async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
                 if opp:
                     found.append(opp)
             except Exception as e:
-                logger.error(
-                    f"Error analyzing outcome {outcome.id} "
-                    f"(market {market.id}): {e}",
-                    exc_info=True,
-                )
+                logger.error(f"Error analyzing outcome {outcome.id}: {e}", exc_info=True)
 
     return found
 
 
-async def _analyze_outcome(
-    db: AsyncSession, city: City, outcome: MarketOutcome
-) -> Optional[Opportunity]:
+async def _analyze_outcome(db: AsyncSession, city: City, outcome: MarketOutcome) -> Optional[Opportunity]:
     signals = await aggregator.aggregate(
-        db=db,
-        city_id=city.id,
-        primary_icao=city.primary_icao,
-        reference_icao=city.reference_icao,
-        outcome=outcome,
+        db=db, city_id=city.id, primary_icao=city.primary_icao,
+        reference_icao=city.reference_icao, outcome=outcome,
     )
 
     price_info = signals.get("market_price")
     if not price_info:
-        logger.debug(f"No market price for outcome {outcome.id}, skipping")
         return None
 
     yes_price = price_info["yes_price"]
-
     true_prob = estimate_true_probability(signals, outcome.bucket_min, outcome.bucket_max)
     confidence = compute_confidence(signals, outcome.bucket_min, outcome.bucket_max)
 
-    # Determine best side
     yes_edge = true_prob - yes_price
     no_edge = (1 - true_prob) - (1 - yes_price)
-
     best_edge = yes_edge if yes_edge >= no_edge else no_edge
     best_side = "YES" if yes_edge >= no_edge else "NO"
 
     req_edge = _required_edge(yes_price)
     if best_edge < req_edge or confidence < settings.min_confidence_for_alert:
         return None
-
-    logger.info(
-        f"Opportunity found: outcome {outcome.id} "
-        f"side={best_side} price={yes_price:.2f} "
-        f"true_prob={true_prob:.2f} edge={best_edge:.2f} "
-        f"confidence={confidence}"
-    )
 
     opp = Opportunity(
         outcome_id=outcome.id,

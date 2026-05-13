@@ -6,15 +6,4 @@ from app.models.market import Market, MarketOutcome, MarketPrice
 from app.models.opportunity import Opportunity
 from app.models.alert import Alert, TelegramUser
 
-__all__ = [
-    "City",
-    "MetarObservation",
-    "Forecast",
-    "Pirep",
-    "Market",
-    "MarketOutcome",
-    "MarketPrice",
-    "Opportunity",
-    "Alert",
-    "TelegramUser",
-]
+__all__ = ["City","MetarObservation","Forecast","Pirep","Market","MarketOutcome","MarketPrice","Opportunity","Alert","TelegramUser"]

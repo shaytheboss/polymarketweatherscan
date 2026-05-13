@@ -15,67 +15,38 @@ logger = logging.getLogger(__name__)
 class WundergroundCollector(BaseCollector):
     name = "wunderground"
 
-    # Wunderground doesn't have a free public API, so we scrape.
-    # This is fragile — update selectors if the page layout changes.
-
     async def collect(self, url: str) -> Optional[dict]:
-        """Scrape the Wunderground page for today's forecast high/low."""
         try:
             resp = await self._get(url)
-            soup = BeautifulSoup(resp.text, "lxml")
-            return self._parse(soup)
+            return self._parse(BeautifulSoup(resp.text, "lxml"))
         except Exception as e:
             logger.error(f"Wunderground scrape failed for {url}: {e}")
             return None
 
-    def _parse(self, soup: BeautifulSoup) -> Optional[dict]:
+    def _parse(self, soup) -> Optional[dict]:
         result: dict = {}
-
-        # Look for today's high temperature
-        # Wunderground embeds JSON-LD or data attributes; try both.
         high_el = soup.select_one("[data-testid='TemperatureValue']")
         if high_el:
             try:
                 result["predicted_high_f"] = int(re.sub(r"[^\d-]", "", high_el.text))
             except ValueError:
                 pass
-
-        # Fallback: try the summary forecast section
         if not result.get("predicted_high_f"):
             for span in soup.find_all("span", class_=re.compile(r"temp|high|forecast", re.I)):
                 nums = re.findall(r"\b(\d{2,3})\b", span.text)
                 if nums:
                     result["predicted_high_f"] = int(nums[0])
                     break
-
-        # Conditions text
         cond_el = soup.select_one("[data-testid='wxPhrase']")
         if cond_el:
             result["conditions"] = cond_el.text.strip()
+        return result or None
 
-        if not result:
-            logger.warning("Wunderground: could not parse any useful data")
-            return None
-
-        return result
-
-    async def collect_and_store(
-        self, city_id: int, url: str, forecast_date: date, db: AsyncSession
-    ) -> Optional[dict]:
+    async def collect_and_store(self, city_id, url, forecast_date, db):
         parsed = await self.collect(url)
         if not parsed:
             return None
-
-        forecast = Forecast(
-            city_id=city_id,
-            source="wunderground",
-            forecast_for_date=forecast_date,
-            predicted_high_f=parsed.get("predicted_high_f"),
-            predicted_low_f=parsed.get("predicted_low_f"),
-            conditions=parsed.get("conditions"),
-            raw_data=parsed,
-        )
+        forecast = Forecast(city_id=city_id, source="wunderground", forecast_for_date=forecast_date, predicted_high_f=parsed.get("predicted_high_f"), predicted_low_f=parsed.get("predicted_low_f"), conditions=parsed.get("conditions"), raw_data=parsed)
         db.add(forecast)
         await db.commit()
-        logger.info(f"Wunderground forecast stored for city {city_id}: {parsed}")
         return parsed

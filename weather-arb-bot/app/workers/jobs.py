@@ -109,7 +109,6 @@ async def job_fetch_polymarket():
         )
         outcomes = result.scalars().all()
         for outcome in outcomes:
-            # external_token_id would be stored in market; here we use bucket_label as placeholder
             market_result = await db.execute(
                 select(Market).where(Market.id == outcome.market_id)
             )
@@ -117,7 +116,6 @@ async def job_fetch_polymarket():
             if not market or not market.external_id:
                 continue
             try:
-                # Token ID derived from external_id + bucket_label in production
                 token_id = f"{market.external_id}_{outcome.bucket_label}"
                 await poly_col.collect_and_store(outcome.id, token_id, db)
             except Exception as e:

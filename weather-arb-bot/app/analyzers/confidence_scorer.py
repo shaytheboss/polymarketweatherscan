@@ -2,24 +2,12 @@ from typing import Optional
 
 
 def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Optional[int]) -> int:
-    """
-    Compute a 0–100 confidence score for a probability estimate.
-
-    Scoring rubric:
-      +20  all model sources present and agree
-      +15  current METAR trend supports the estimate
-      +15  reference (coastal) station supports the estimate
-      +10  PIREP data supports the estimate
-      +10  market has significant volume (price is reliable)
-      -30  contradiction between key sources
-    """
-    score = 40  # baseline
+    score = 40
 
     gfs_high = (signals.get("gfs_forecast") or {}).get("predicted_high_f")
     ecmwf_high = (signals.get("ecmwf_forecast") or {}).get("predicted_high_f")
     wg_high = (signals.get("wunderground_forecast") or {}).get("predicted_high_f")
 
-    # --- Model agreement ---
     all_highs = [h for h in [gfs_high, ecmwf_high, wg_high] if h is not None]
     if len(all_highs) >= 2:
         spread = max(all_highs) - min(all_highs)
@@ -28,9 +16,8 @@ def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Opt
         elif spread <= 5:
             score += 10
         else:
-            score -= 10  # models disagree
+            score -= 10
 
-    # --- METAR trend direction ---
     trend = signals.get("metar_trend") or {}
     rate = trend.get("temp_rate_per_hour", 0.0) or 0.0
     current_temp = trend.get("current_temp_f")
@@ -43,7 +30,6 @@ def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Opt
         elif (rate < -0.5 and bucket_requires_warmth) or (rate > 0.5 and not bucket_requires_warmth):
             score -= 15
 
-    # --- Reference station ---
     ref = signals.get("reference_metar") or {}
     ref_wind_dir = ref.get("wind_direction")
     ref_wind_kt = ref.get("wind_speed_kt", 0) or 0
@@ -54,12 +40,11 @@ def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Opt
             if not bucket_requires_warmth:
                 score += 15
             else:
-                score -= 10  # cooling signal for warm bucket
+                score -= 10
         elif not onshore and ref_wind_kt > 8:
             if bucket_requires_warmth:
                 score += 15
 
-    # --- PIREP support ---
     pireps = signals.get("pireps") or []
     low_pireps = [
         r for r in pireps
@@ -74,11 +59,9 @@ def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Opt
         elif (avg_f < 55 and bucket_requires_warmth) or (avg_f > 68 and not bucket_requires_warmth):
             score -= 5
 
-    # --- Market volume sanity ---
     price_info = signals.get("market_price") or {}
     yes_price = price_info.get("yes_price")
     if yes_price is not None:
-        # Prices near 0 or 1 with low volume are unreliable
         if 0.05 <= yes_price <= 0.95:
             score += 10
 
