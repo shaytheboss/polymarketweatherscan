@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Opportunity } from "../api/client";
-import { formatDistanceToNow, format } from "date-fns";
+import { formatDistanceToNow } from "date-fns";
 
 function Badge({ children, color }: { children: React.ReactNode; color: string }) {
   return (
