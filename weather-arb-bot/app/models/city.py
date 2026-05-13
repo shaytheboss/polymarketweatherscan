@@ -6,7 +6,6 @@ from app.database import Base
 
 class City(Base):
     __tablename__ = "cities"
-
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), nullable=False)
     primary_icao = Column(String(4), nullable=False)
@@ -18,6 +17,5 @@ class City(Base):
     buoy_id = Column(String(10))
     active = Column(Boolean, default=True)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
-
     markets = relationship("Market", back_populates="city")
     alerts = relationship("Alert", back_populates="city")

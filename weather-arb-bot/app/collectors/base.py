@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Optional
@@ -7,17 +6,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; WeatherArbBot/1.0; "
-        "+https://github.com/your-repo/weather-arb-bot)"
-    )
-}
+DEFAULT_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; WeatherArbBot/1.0)"}
 
 
 class BaseCollector(ABC):
-    """Base class for all data collectors."""
-
     name: str = "base"
     timeout: int = 30
 
@@ -26,11 +18,7 @@ class BaseCollector(ABC):
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                headers=DEFAULT_HEADERS,
-                timeout=self.timeout,
-                follow_redirects=True,
-            )
+            self._client = httpx.AsyncClient(headers=DEFAULT_HEADERS, timeout=self.timeout, follow_redirects=True)
         return self._client
 
     async def close(self):
@@ -52,5 +40,4 @@ class BaseCollector(ABC):
 
     @abstractmethod
     async def collect(self, *args, **kwargs) -> Any:
-        """Collect and return data. Subclasses must implement."""
         ...
