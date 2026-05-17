@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, desc
@@ -14,18 +14,34 @@ logger = logging.getLogger(__name__)
 
 
 class SignalAggregator:
-    async def aggregate(self, db, city_id, primary_icao, reference_icao, outcome) -> dict:
+    async def aggregate(
+        self,
+        db,
+        city_id,
+        primary_icao,
+        reference_icao,
+        outcome,
+        forecast_date=None,
+        city_lat=None,
+        city_lon=None,
+    ) -> dict:
         signals = {}
         signals["primary_metar"] = await self._latest_metar(db, primary_icao)
         if reference_icao:
             signals["reference_metar"] = await self._latest_metar(db, reference_icao)
         signals["metar_trend"] = await self._metar_trend(db, primary_icao, hours=3)
-        signals["wunderground_forecast"] = await self._latest_forecast(db, city_id, "wunderground")
-        signals["gfs_forecast"] = await self._latest_forecast(db, city_id, "gfs")
-        signals["ecmwf_forecast"] = await self._latest_forecast(db, city_id, "ecmwf")
+        signals["wunderground_forecast"] = await self._latest_forecast(db, city_id, "wunderground", forecast_date)
+        signals["gfs_forecast"] = await self._latest_forecast(db, city_id, "gfs", forecast_date)
+        signals["ecmwf_forecast"] = await self._latest_forecast(db, city_id, "ecmwf", forecast_date)
+        signals["hrrr_forecast"] = await self._latest_forecast(db, city_id, "hrrr", forecast_date)
+        signals["nws_forecast"] = await self._latest_forecast(db, city_id, "nws", forecast_date)
+        signals["tomorrowio_forecast"] = await self._latest_forecast(db, city_id, "tomorrowio", forecast_date)
+        signals["meteosource_forecast"] = await self._latest_forecast(db, city_id, "meteosource", forecast_date)
         signals["pireps"] = await self._recent_pireps(db, primary_icao, hours=2)
         signals["market_price"] = await self._latest_price(db, outcome.id)
         signals["price_trend"] = await self._price_trend(db, outcome.id, minutes=60)
+        signals["city_lat"] = city_lat
+        signals["city_lon"] = city_lon
         return signals
 
     async def _latest_metar(self, db, icao):
@@ -74,11 +90,15 @@ class SignalAggregator:
             "span_hours": round(hours_span, 2),
         }
 
-    async def _latest_forecast(self, db, city_id, source):
-        result = await db.execute(
-            select(Forecast).where(Forecast.city_id == city_id, Forecast.source == source)
-            .order_by(desc(Forecast.retrieved_at)).limit(1)
+    async def _latest_forecast(self, db, city_id, source, forecast_date=None):
+        query = select(Forecast).where(
+            Forecast.city_id == city_id,
+            Forecast.source == source,
         )
+        if forecast_date is not None:
+            query = query.where(Forecast.forecast_for_date == forecast_date)
+        query = query.order_by(desc(Forecast.retrieved_at)).limit(1)
+        result = await db.execute(query)
         row = result.scalar_one_or_none()
         if not row:
             return None

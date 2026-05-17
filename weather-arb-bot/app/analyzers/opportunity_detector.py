@@ -45,7 +45,7 @@ async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
 
         for outcome in outcomes:
             try:
-                opp = await _analyze_outcome(db, city, outcome)
+                opp = await _analyze_outcome(db, city, market, outcome)
                 if opp:
                     found.append(opp)
             except Exception as e:
@@ -54,10 +54,24 @@ async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
     return found
 
 
-async def _analyze_outcome(db: AsyncSession, city: City, outcome: MarketOutcome) -> Optional[Opportunity]:
+async def _analyze_outcome(
+    db: AsyncSession,
+    city: City,
+    market: Market,
+    outcome: MarketOutcome,
+) -> Optional[Opportunity]:
+    city_lat = float(city.nws_lat) if city.nws_lat is not None else None
+    city_lon = float(city.nws_lon) if city.nws_lon is not None else None
+
     signals = await aggregator.aggregate(
-        db=db, city_id=city.id, primary_icao=city.primary_icao,
-        reference_icao=city.reference_icao, outcome=outcome,
+        db=db,
+        city_id=city.id,
+        primary_icao=city.primary_icao,
+        reference_icao=city.reference_icao,
+        outcome=outcome,
+        forecast_date=market.event_date,
+        city_lat=city_lat,
+        city_lon=city_lon,
     )
 
     price_info = signals.get("market_price")
