@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.analyzers.signal_aggregator import SignalAggregator
-from app.analyzers.probability_estimator import estimate_true_probability
+from app.analyzers.probability_estimator import estimate_true_probability, _is_celsius_label
 from app.analyzers.confidence_scorer import compute_confidence
 from app.config import settings
 from app.models.city import City
@@ -22,6 +22,14 @@ def _required_edge(market_price: float) -> float:
     if 0.30 <= market_price <= 0.70:
         return settings.min_edge_for_alert
     return settings.min_edge_for_alert * 0.67
+
+
+def _resolve_bucket_unit(outcome: MarketOutcome) -> str:
+    """Return 'C' or 'F'. Falls back to label detection when column not yet migrated."""
+    unit = (getattr(outcome, "bucket_unit", None) or "F").upper()
+    if unit == "F" and _is_celsius_label(outcome.bucket_label or ""):
+        unit = "C"
+    return unit
 
 
 async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
@@ -79,8 +87,14 @@ async def _analyze_outcome(
         return None
 
     yes_price = price_info["yes_price"]
-    true_prob = estimate_true_probability(signals, outcome.bucket_min, outcome.bucket_max)
-    confidence = compute_confidence(signals, outcome.bucket_min, outcome.bucket_max)
+    bucket_unit = _resolve_bucket_unit(outcome)
+
+    true_prob = estimate_true_probability(
+        signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+    )
+    confidence = compute_confidence(
+        signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+    )
 
     yes_edge = true_prob - yes_price
     no_edge = (1 - true_prob) - (1 - yes_price)

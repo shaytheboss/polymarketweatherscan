@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.market import Market, MarketOutcome, MarketPrice
 from app.analyzers.signal_aggregator import SignalAggregator
-from app.analyzers.probability_estimator import estimate_true_probability
+from app.analyzers.probability_estimator import estimate_true_probability, _is_celsius_label
 from app.analyzers.confidence_scorer import compute_confidence
 from app.models.city import City
 
@@ -32,6 +32,14 @@ class OutcomeCreate(BaseModel):
     bucket_label: str
     bucket_min: Optional[int] = None
     bucket_max: Optional[int] = None
+    bucket_unit: str = "F"
+
+
+def _resolve_bucket_unit(outcome) -> str:
+    unit = (getattr(outcome, "bucket_unit", None) or "F").upper()
+    if unit == "F" and _is_celsius_label(outcome.bucket_label or ""):
+        unit = "C"
+    return unit
 
 
 @router.get("")
@@ -77,13 +85,25 @@ async def market_analysis(market_id: int, db: AsyncSession = Depends(get_db)):
     outcomes = outcomes_result.scalars().all()
     analysis = []
     for outcome in outcomes:
+        bucket_unit = _resolve_bucket_unit(outcome)
         signals = await aggregator.aggregate(
             db, market.city_id, city.primary_icao if city else "KSFO",
             city.reference_icao if city else None, outcome,
         )
-        true_prob = estimate_true_probability(signals, outcome.bucket_min, outcome.bucket_max)
-        confidence = compute_confidence(signals, outcome.bucket_min, outcome.bucket_max)
+        true_prob = estimate_true_probability(
+            signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+        )
+        confidence = compute_confidence(
+            signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+        )
         market_price = (signals.get("market_price") or {}).get("yes_price")
         edge = (true_prob - market_price) if market_price is not None else None
-        analysis.append({"bucket": outcome.bucket_label, "market_price": market_price, "true_prob": round(true_prob, 4), "confidence": confidence, "edge": round(edge, 4) if edge is not None else None})
+        analysis.append({
+            "bucket": outcome.bucket_label,
+            "bucket_unit": bucket_unit,
+            "market_price": market_price,
+            "true_prob": round(true_prob, 4),
+            "confidence": confidence,
+            "edge": round(edge, 4) if edge is not None else None,
+        })
     return analysis

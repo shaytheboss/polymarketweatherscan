@@ -56,6 +56,7 @@ async def send_opportunity_alert(opportunity, db) -> None:
         confidence=opportunity.confidence_score,
         signals=opportunity.signals or {},
         resolution_time=market.resolution_time,
+        side=opportunity.side,
     )
 
     users_result = await db.execute(
