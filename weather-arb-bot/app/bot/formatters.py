@@ -2,28 +2,34 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+_FORECAST_SOURCE_LABELS = {
+    "wunderground_forecast": "WU",
+    "gfs_forecast": "GFS",
+    "ecmwf_forecast": "ECMWF",
+    "hrrr_forecast": "HRRR",
+    "nws_forecast": "NWS",
+    "tomorrowio_forecast": "Tomorrow.io",
+    "meteosource_forecast": "Meteosource",
+}
+
 
 def _c_bucket_f_label(bucket_label: str) -> str:
     """Append F-equivalent annotation to a Celsius bucket label for display."""
     if "°C" not in bucket_label:
         return bucket_label
-    # "29°C or higher" -> append (>=84°F)
     m = re.search(r'(\d+(?:\.\d+)?)\s*°C\s+or\s+higher', bucket_label, re.IGNORECASE)
     if m:
         f_val = round(float(m.group(1)) * 9 / 5 + 32)
         return f"{bucket_label} (≥{f_val}°F)"
-    # "29°C or lower" -> append (<=84°F)
     m = re.search(r'(\d+(?:\.\d+)?)\s*°C\s+or\s+lower', bucket_label, re.IGNORECASE)
     if m:
         f_val = round(float(m.group(1)) * 9 / 5 + 32)
         return f"{bucket_label} (≤{f_val}°F)"
-    # "29-30°C" range
     m = re.search(r'(\d+)\s*[-–]\s*(\d+)\s*°C', bucket_label, re.IGNORECASE)
     if m:
         f1 = round(float(m.group(1)) * 9 / 5 + 32)
         f2 = round(float(m.group(2)) * 9 / 5 + 32)
         return f"{bucket_label} ({f1}-{f2}°F)"
-    # single value "32°C"
     m = re.search(r'(\d+(?:\.\d+)?)\s*°C', bucket_label)
     if m:
         f_val = round(float(m.group(1)) * 9 / 5 + 32)
@@ -44,24 +50,47 @@ def fmt_opportunity(
     bucket_display = _c_bucket_f_label(bucket_label)
 
     key_signals = []
+
+    # Wind at reference station
     ref = signals.get("reference_metar") or {}
     if ref.get("wind_direction") and ref.get("wind_speed_kt"):
         key_signals.append(f"• Ref station wind {ref['wind_direction']:03d}°/{ref['wind_speed_kt']}kt")
+
+    # Dew point trend and spread
     trend = signals.get("metar_trend") or {}
     primary = signals.get("primary_metar") or {}
-    if trend.get("dew_rate_per_hour") and abs(trend["dew_rate_per_hour"]) > 0.3:
+    temp_f = primary.get("temperature_f")
+    dew_f = primary.get("dew_point_f")
+    if dew_f is not None and trend.get("dew_rate_per_hour") and abs(trend["dew_rate_per_hour"]) > 0.3:
         direction = "rising" if trend["dew_rate_per_hour"] > 0 else "falling"
-        dp = primary.get("dew_point_f")
-        key_signals.append(f"• Dew point {direction} ({dp}°F)")
+        key_signals.append(f"• Dew point {direction} ({dew_f}°F)")
+    if temp_f is not None and dew_f is not None and (temp_f - dew_f) < 5.0:
+        key_signals.append(f"• Dew spread {round(temp_f - dew_f, 1)}°F — fog/stratus risk")
+
+    # Today's METAR running max
+    today_max = signals.get("metar_today_max_f")
+    if today_max is not None:
+        key_signals.append(f"• METAR today max: {round(today_max, 1)}°F")
+
+    # Low-altitude PIREPs
     pireps = signals.get("pireps") or []
     low_pireps = [p for p in pireps if (p.get("flight_level_ft") or 99999) <= 5000]
     if low_pireps:
-        avg_c = sum(p["temperature_c"] for p in low_pireps if p.get("temperature_c")) / len(low_pireps)
-        avg_f = round(avg_c * 9 / 5 + 32)
-        key_signals.append(f"• PIREP: {avg_f}°F avg at low altitude")
-    wg = signals.get("wunderground_forecast") or {}
-    if wg.get("predicted_high_f"):
-        key_signals.append(f"• Wunderground forecast: {wg['predicted_high_f']}°F")
+        valid = [p["temperature_c"] for p in low_pireps if p.get("temperature_c") is not None]
+        if valid:
+            avg_f = round(sum(valid) / len(valid) * 9 / 5 + 32)
+            key_signals.append(f"• PIREP: {avg_f}°F avg at low altitude ({len(valid)} reports)")
+
+    # All available forecast sources
+    forecast_parts = []
+    for key, label in _FORECAST_SOURCE_LABELS.items():
+        fc = signals.get(key) or {}
+        val = fc.get("predicted_high_f")
+        if val is not None:
+            forecast_parts.append(f"{label}: {val}°F")
+    if forecast_parts:
+        key_signals.append(f"• Forecasts: {' | '.join(forecast_parts)}")
+
     signals_text = "\n".join(key_signals) if key_signals else "• No key signals available"
 
     hours_left = ""
