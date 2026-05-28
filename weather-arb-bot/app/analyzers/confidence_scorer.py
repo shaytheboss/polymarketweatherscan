@@ -1,5 +1,16 @@
 from typing import Optional
 
+_ALL_FORECAST_KEYS = (
+    "wunderground_forecast",
+    "gfs_forecast",
+    "ecmwf_forecast",
+    "hrrr_forecast",
+    "icon_forecast",
+    "nws_forecast",
+    "tomorrowio_forecast",
+    "meteosource_forecast",
+)
+
 
 def _c_to_f(c: float) -> float:
     return c * 9.0 / 5.0 + 32.0
@@ -11,20 +22,27 @@ def compute_confidence(
     bucket_max: Optional[int],
     bucket_unit: str = "F",
 ) -> int:
-    # Compute F-equivalent lower bound for unit-agnostic warmth determination
     if bucket_unit == "C":
         lo_f = _c_to_f(float(bucket_min)) if bucket_min is not None else -999.0
+        hi_f = _c_to_f(float(bucket_max)) if bucket_max is not None else 999.0
     else:
         lo_f = float(bucket_min) if bucket_min is not None else -999.0
+        hi_f = float(bucket_max) if bucket_max is not None else 999.0
 
     bucket_requires_warmth = lo_f >= 66.0
     score = 40
 
-    gfs_high = (signals.get("gfs_forecast") or {}).get("predicted_high_f")
-    ecmwf_high = (signals.get("ecmwf_forecast") or {}).get("predicted_high_f")
-    wg_high = (signals.get("wunderground_forecast") or {}).get("predicted_high_f")
+    # --- Ensemble spread across all available forecast sources ---
+    all_highs = []
+    for key in _ALL_FORECAST_KEYS:
+        fc = signals.get(key) or {}
+        val = fc.get("predicted_high_f")
+        if val is not None:
+            all_highs.append(float(val))
 
-    all_highs = [h for h in [gfs_high, ecmwf_high, wg_high] if h is not None]
+    if len(all_highs) >= 4:
+        # Rich ensemble bonus
+        score += 10
     if len(all_highs) >= 2:
         spread = max(all_highs) - min(all_highs)
         if spread <= 2:
@@ -33,6 +51,13 @@ def compute_confidence(
             score += 10
         else:
             score -= 10
+
+    # --- METAR today running-max anchors confidence ---
+    today_max = signals.get("metar_today_max_f")
+    if today_max is not None:
+        if today_max >= hi_f or today_max >= lo_f:
+            # Today's observed max already in/past the bucket — strong anchor
+            score += 20
 
     trend = signals.get("metar_trend") or {}
     rate = trend.get("temp_rate_per_hour", 0.0) or 0.0

@@ -7,6 +7,7 @@ _FORECAST_SOURCE_LABELS = {
     "gfs_forecast": "GFS",
     "ecmwf_forecast": "ECMWF",
     "hrrr_forecast": "HRRR",
+    "icon_forecast": "ICON",
     "nws_forecast": "NWS",
     "tomorrowio_forecast": "Tomorrow.io",
     "meteosource_forecast": "Meteosource",
@@ -37,6 +38,27 @@ def _c_bucket_f_label(bucket_label: str) -> str:
     return bucket_label
 
 
+def _fmt_breakdown(breakdown: dict) -> str:
+    """Compact one-line-per-stage representation of the probability breakdown."""
+    if not breakdown:
+        return ""
+    stages = breakdown.get("stages") or []
+    if not stages:
+        return ""
+    lines = []
+    for s in stages:
+        stage = s.get("stage", "?")
+        p = s.get("p")
+        extras = []
+        for k, v in s.items():
+            if k in ("stage", "p"):
+                continue
+            extras.append(f"{k}={v}")
+        extra_str = (" " + " ".join(extras)) if extras else ""
+        lines.append(f"  {stage}: p={p}{extra_str}")
+    return "\n".join(lines)
+
+
 def fmt_opportunity(
     city_name, market_question, bucket_label, market_price, true_prob,
     edge, confidence, signals, resolution_time=None, market_url=None,
@@ -51,12 +73,10 @@ def fmt_opportunity(
 
     key_signals = []
 
-    # Wind at reference station
     ref = signals.get("reference_metar") or {}
     if ref.get("wind_direction") and ref.get("wind_speed_kt"):
         key_signals.append(f"• Ref station wind {ref['wind_direction']:03d}°/{ref['wind_speed_kt']}kt")
 
-    # Dew point trend and spread
     trend = signals.get("metar_trend") or {}
     primary = signals.get("primary_metar") or {}
     temp_f = primary.get("temperature_f")
@@ -67,12 +87,10 @@ def fmt_opportunity(
     if temp_f is not None and dew_f is not None and (temp_f - dew_f) < 5.0:
         key_signals.append(f"• Dew spread {round(temp_f - dew_f, 1)}°F — fog/stratus risk")
 
-    # Today's METAR running max
     today_max = signals.get("metar_today_max_f")
     if today_max is not None:
         key_signals.append(f"• METAR today max: {round(today_max, 1)}°F")
 
-    # Low-altitude PIREPs
     pireps = signals.get("pireps") or []
     low_pireps = [p for p in pireps if (p.get("flight_level_ft") or 99999) <= 5000]
     if low_pireps:
@@ -81,7 +99,6 @@ def fmt_opportunity(
             avg_f = round(sum(valid) / len(valid) * 9 / 5 + 32)
             key_signals.append(f"• PIREP: {avg_f}°F avg at low altitude ({len(valid)} reports)")
 
-    # All available forecast sources
     forecast_parts = []
     for key, label in _FORECAST_SOURCE_LABELS.items():
         fc = signals.get(key) or {}
@@ -89,9 +106,16 @@ def fmt_opportunity(
         if val is not None:
             forecast_parts.append(f"{label}: {val}°F")
     if forecast_parts:
-        key_signals.append(f"• Forecasts: {' | '.join(forecast_parts)}")
+        key_signals.append(f"• Forecasts ({len(forecast_parts)}): {' | '.join(forecast_parts)}")
 
     signals_text = "\n".join(key_signals) if key_signals else "• No key signals available"
+
+    breakdown_text = ""
+    breakdown = signals.get("probability_breakdown")
+    if breakdown:
+        b = _fmt_breakdown(breakdown)
+        if b:
+            breakdown_text = f"\n\n\U0001f9ee Probability stages:\n{b}"
 
     hours_left = ""
     if resolution_time:
@@ -109,7 +133,8 @@ def fmt_opportunity(
         f"\U0001f4b0 Market price: {price_cents}¢ ({side})\n"
         f"\U0001f9e0 Model estimate: {prob_pct}% P({side})\n"
         f"\U0001f4c8 Edge: +{edge_pct}pp\n\n"
-        f"\U0001f50d Key signals:\n{signals_text}\n\n"
+        f"\U0001f50d Key signals:\n{signals_text}"
+        f"{breakdown_text}\n\n"
         f"⚠️  Confidence: {confidence}/100"
         f"{hours_left}"
         f"{link_line}"

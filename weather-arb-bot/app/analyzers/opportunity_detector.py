@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.analyzers.signal_aggregator import SignalAggregator
-from app.analyzers.probability_estimator import estimate_true_probability, _is_celsius_label
+from app.analyzers.probability_estimator import estimate_with_breakdown, _is_celsius_label
 from app.analyzers.confidence_scorer import compute_confidence
 from app.config import settings
 from app.models.city import City
@@ -89,11 +89,17 @@ async def _analyze_outcome(
     yes_price = price_info["yes_price"]
     bucket_unit = _resolve_bucket_unit(outcome)
 
-    true_prob = estimate_true_probability(
+    true_prob, breakdown = estimate_with_breakdown(
         signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
     )
     confidence = compute_confidence(
         signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+    )
+
+    logger.info(
+        "analyzed outcome=%s bucket=%s p=%.3f conf=%d stages=%d",
+        outcome.id, outcome.bucket_label, true_prob, confidence,
+        len(breakdown.get("stages", [])),
     )
 
     yes_edge = true_prob - yes_price
@@ -104,6 +110,9 @@ async def _analyze_outcome(
     req_edge = _required_edge(yes_price)
     if best_edge < req_edge or confidence < settings.min_confidence_for_alert:
         return None
+
+    # Persist breakdown into signals JSONB for later inspection
+    signals["probability_breakdown"] = breakdown
 
     opp = Opportunity(
         outcome_id=outcome.id,
