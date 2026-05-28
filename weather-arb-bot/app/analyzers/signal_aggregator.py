@@ -2,7 +2,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.metar import MetarObservation
@@ -35,6 +35,7 @@ class SignalAggregator:
         signals["gfs_forecast"] = await self._latest_forecast(db, city_id, "gfs", forecast_date)
         signals["ecmwf_forecast"] = await self._latest_forecast(db, city_id, "ecmwf", forecast_date)
         signals["hrrr_forecast"] = await self._latest_forecast(db, city_id, "hrrr", forecast_date)
+        signals["icon_forecast"] = await self._latest_forecast(db, city_id, "icon", forecast_date)
         signals["nws_forecast"] = await self._latest_forecast(db, city_id, "nws", forecast_date)
         signals["tomorrowio_forecast"] = await self._latest_forecast(db, city_id, "tomorrowio", forecast_date)
         signals["meteosource_forecast"] = await self._latest_forecast(db, city_id, "meteosource", forecast_date)
@@ -65,7 +66,6 @@ class SignalAggregator:
         }
 
     async def _today_max_temp(self, db, icao: str) -> Optional[float]:
-        """Return today's running maximum temperature (°F) from METAR obs since UTC midnight."""
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )

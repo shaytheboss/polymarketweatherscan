@@ -12,6 +12,7 @@ from app.collectors.wunderground_collector import WundergroundCollector
 from app.collectors.nws_collector import NWSCollector
 from app.collectors.gfs_collector import GFSCollector
 from app.collectors.hrrr_collector import HRRRCollector
+from app.collectors.icon_collector import ICONCollector
 from app.collectors.tomorrowio_collector import TomorrowioCollector
 from app.collectors.meteosource_collector import MeteosourceCollector
 from app.collectors.pirep_collector import PirepCollector
@@ -27,6 +28,7 @@ wunder_col = WundergroundCollector()
 nws_col = NWSCollector()
 gfs_col = GFSCollector()
 hrrr_col = HRRRCollector()
+icon_col = ICONCollector()
 tomorrowio_col = TomorrowioCollector(api_key=settings.tomorrowio_api_key)
 meteosource_col = MeteosourceCollector(api_key=settings.meteosource_api_key)
 pirep_col = PirepCollector()
@@ -78,7 +80,7 @@ async def job_fetch_nws():
 
 
 async def job_fetch_models():
-    """Fetch GFS, ECMWF, and HRRR model data for all active cities."""
+    """Fetch GFS, ECMWF, HRRR, and ICON model data for all active cities."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(City).where(City.active == True))
         cities = result.scalars().all()
@@ -96,6 +98,10 @@ async def job_fetch_models():
                 await hrrr_col.collect_and_store(city.id, lat, lon, today, db)
             except Exception as e:
                 logger.error(f"HRRR job failed for {city.name}: {e}")
+            try:
+                await icon_col.collect_and_store(city.id, lat, lon, today, db)
+            except Exception as e:
+                logger.error(f"ICON job failed for {city.name}: {e}")
 
 
 async def job_fetch_external_forecasts():
