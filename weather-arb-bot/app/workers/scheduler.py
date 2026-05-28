@@ -15,6 +15,7 @@ from app.workers.jobs import (
     job_fetch_wunderground,
     job_fetch_nws,
     job_fetch_models,
+    job_fetch_external_forecasts,
     job_fetch_pireps,
     job_fetch_polymarket,
     job_run_analyzer,
@@ -58,13 +59,21 @@ def build_scheduler() -> AsyncIOScheduler:
         job_fetch_models,
         IntervalTrigger(seconds=3600),
         id="models",
-        name="Fetch GFS/ECMWF model data",
+        name="Fetch GFS/ECMWF/HRRR model data",
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        job_fetch_external_forecasts,
+        IntervalTrigger(seconds=settings.external_forecast_fetch_interval),
+        id="external_forecasts",
+        name="Fetch Tomorrow.io and Meteosource forecasts",
         max_instances=1,
         misfire_grace_time=600,
     )
     scheduler.add_job(
         job_fetch_pireps,
-        IntervalTrigger(seconds=900),  # every 15 min
+        IntervalTrigger(seconds=900),
         id="pireps",
         name="Fetch PIREPs",
         max_instances=1,

@@ -1,7 +1,23 @@
 from typing import Optional
 
 
-def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Optional[int]) -> int:
+def _c_to_f(c: float) -> float:
+    return c * 9.0 / 5.0 + 32.0
+
+
+def compute_confidence(
+    signals: dict,
+    bucket_min: Optional[int],
+    bucket_max: Optional[int],
+    bucket_unit: str = "F",
+) -> int:
+    # Compute F-equivalent lower bound for unit-agnostic warmth determination
+    if bucket_unit == "C":
+        lo_f = _c_to_f(float(bucket_min)) if bucket_min is not None else -999.0
+    else:
+        lo_f = float(bucket_min) if bucket_min is not None else -999.0
+
+    bucket_requires_warmth = lo_f >= 66.0
     score = 40
 
     gfs_high = (signals.get("gfs_forecast") or {}).get("predicted_high_f")
@@ -21,8 +37,6 @@ def compute_confidence(signals: dict, bucket_min: Optional[int], bucket_max: Opt
     trend = signals.get("metar_trend") or {}
     rate = trend.get("temp_rate_per_hour", 0.0) or 0.0
     current_temp = trend.get("current_temp_f")
-
-    bucket_requires_warmth = bucket_min is not None and bucket_min >= 66
 
     if current_temp is not None:
         if (rate > 0.5 and bucket_requires_warmth) or (rate < -0.5 and not bucket_requires_warmth):

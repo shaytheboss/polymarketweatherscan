@@ -83,14 +83,27 @@ export interface CityCurrentData {
   latest_forecast: { predicted_high_f: number | null; conditions: string | null } | null;
 }
 
+export interface ForecastSignal {
+  predicted_high_f: number | null;
+  predicted_low_f?: number | null;
+  conditions?: string | null;
+  retrieved_at?: string;
+}
+
 export interface Signals {
   primary_metar: Record<string, unknown> | null;
   reference_metar: Record<string, unknown> | null;
   metar_trend: { temp_rate_per_hour: number; current_temp_f: number } | null;
-  wunderground_forecast: { predicted_high_f: number | null } | null;
-  gfs_forecast: { predicted_high_f: number | null } | null;
-  ecmwf_forecast: { predicted_high_f: number | null } | null;
+  wunderground_forecast: ForecastSignal | null;
+  gfs_forecast: ForecastSignal | null;
+  ecmwf_forecast: ForecastSignal | null;
+  hrrr_forecast: ForecastSignal | null;
+  nws_forecast: ForecastSignal | null;
+  tomorrowio_forecast: ForecastSignal | null;
+  meteosource_forecast: ForecastSignal | null;
   market_price: { yes_price: number; no_price: number } | null;
+  city_lat: number | null;
+  city_lon: number | null;
 }
 
 export interface Market {

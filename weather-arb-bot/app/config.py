@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     wunderground_api_key: str = ""
     openweather_api_key: str = ""
     polymarket_api_key: str = ""
+    tomorrowio_api_key: str = ""
+    meteosource_api_key: str = ""
     app_env: str = "development"
     secret_key: str = "changeme"
     cors_origins: str = "http://localhost:3000"
@@ -18,6 +20,7 @@ class Settings(BaseSettings):
     polymarket_fetch_interval: int = 30
     wunderground_fetch_interval: int = 1800
     analyzer_run_interval: int = 120
+    external_forecast_fetch_interval: int = 14400
     min_confidence_for_alert: int = 60
     min_edge_for_alert: float = 0.15
     alert_dedup_minutes: int = 30

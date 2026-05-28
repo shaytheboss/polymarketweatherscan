@@ -1,5 +1,4 @@
 from sqlalchemy import Boolean, Column, Date, ForeignKey, Integer, Numeric, String, Text, TIMESTAMP, UniqueConstraint
-from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, Index
 from app.database import Base
 
@@ -28,6 +27,7 @@ class MarketOutcome(Base):
     bucket_label = Column(String(50), nullable=False)
     bucket_min = Column(Integer)
     bucket_max = Column(Integer)
+    bucket_unit = Column(String(1), nullable=False, server_default="F")
     market = relationship("Market", back_populates="outcomes")
     prices = relationship("MarketPrice", back_populates="outcome")
     opportunities = relationship("Opportunity", back_populates="outcome")
@@ -43,4 +43,7 @@ class MarketPrice(Base):
     no_price = Column(Numeric(6, 4), nullable=False)
     volume_24h = Column(Numeric(18, 2))
     outcome = relationship("MarketOutcome", back_populates="prices")
-    __table_args__ = (UniqueConstraint("outcome_id", "timestamp", name="uq_price_outcome_time"), Index("idx_prices_outcome_time", "outcome_id", "timestamp"))
+    __table_args__ = (
+        UniqueConstraint("outcome_id", "timestamp", name="uq_price_outcome_time"),
+        Index("idx_prices_outcome_time", "outcome_id", "timestamp"),
+    )

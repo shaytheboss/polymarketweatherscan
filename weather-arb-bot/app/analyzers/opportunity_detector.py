@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.analyzers.signal_aggregator import SignalAggregator
-from app.analyzers.probability_estimator import estimate_true_probability
+from app.analyzers.probability_estimator import estimate_true_probability, _is_celsius_label
 from app.analyzers.confidence_scorer import compute_confidence
 from app.config import settings
 from app.models.city import City
@@ -22,6 +22,14 @@ def _required_edge(market_price: float) -> float:
     if 0.30 <= market_price <= 0.70:
         return settings.min_edge_for_alert
     return settings.min_edge_for_alert * 0.67
+
+
+def _resolve_bucket_unit(outcome: MarketOutcome) -> str:
+    """Return 'C' or 'F'. Falls back to label detection when column not yet migrated."""
+    unit = (getattr(outcome, "bucket_unit", None) or "F").upper()
+    if unit == "F" and _is_celsius_label(outcome.bucket_label or ""):
+        unit = "C"
+    return unit
 
 
 async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
@@ -45,7 +53,7 @@ async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
 
         for outcome in outcomes:
             try:
-                opp = await _analyze_outcome(db, city, outcome)
+                opp = await _analyze_outcome(db, city, market, outcome)
                 if opp:
                     found.append(opp)
             except Exception as e:
@@ -54,10 +62,24 @@ async def detect_opportunities(db: AsyncSession) -> List[Opportunity]:
     return found
 
 
-async def _analyze_outcome(db: AsyncSession, city: City, outcome: MarketOutcome) -> Optional[Opportunity]:
+async def _analyze_outcome(
+    db: AsyncSession,
+    city: City,
+    market: Market,
+    outcome: MarketOutcome,
+) -> Optional[Opportunity]:
+    city_lat = float(city.nws_lat) if city.nws_lat is not None else None
+    city_lon = float(city.nws_lon) if city.nws_lon is not None else None
+
     signals = await aggregator.aggregate(
-        db=db, city_id=city.id, primary_icao=city.primary_icao,
-        reference_icao=city.reference_icao, outcome=outcome,
+        db=db,
+        city_id=city.id,
+        primary_icao=city.primary_icao,
+        reference_icao=city.reference_icao,
+        outcome=outcome,
+        forecast_date=market.event_date,
+        city_lat=city_lat,
+        city_lon=city_lon,
     )
 
     price_info = signals.get("market_price")
@@ -65,8 +87,14 @@ async def _analyze_outcome(db: AsyncSession, city: City, outcome: MarketOutcome)
         return None
 
     yes_price = price_info["yes_price"]
-    true_prob = estimate_true_probability(signals, outcome.bucket_min, outcome.bucket_max)
-    confidence = compute_confidence(signals, outcome.bucket_min, outcome.bucket_max)
+    bucket_unit = _resolve_bucket_unit(outcome)
+
+    true_prob = estimate_true_probability(
+        signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+    )
+    confidence = compute_confidence(
+        signals, outcome.bucket_min, outcome.bucket_max, bucket_unit
+    )
 
     yes_edge = true_prob - yes_price
     no_edge = (1 - true_prob) - (1 - yes_price)
