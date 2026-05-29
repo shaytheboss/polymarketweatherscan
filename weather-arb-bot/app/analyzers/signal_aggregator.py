@@ -1,5 +1,6 @@
 import logging
-from datetime import date, datetime, timedelta, timezone
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, desc
@@ -8,9 +9,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.metar import MetarObservation
 from app.models.forecast import Forecast
 from app.models.pirep import Pirep
-from app.models.market import MarketPrice, MarketOutcome
+from app.models.market import MarketPrice
 
 logger = logging.getLogger(__name__)
+
+_FORECAST_SOURCE_KEYS = (
+    "wunderground_forecast",
+    "gfs_forecast",
+    "ecmwf_forecast",
+    "hrrr_forecast",
+    "icon_forecast",
+    "nws_forecast",
+    "tomorrowio_forecast",
+    "meteosource_forecast",
+)
 
 
 class SignalAggregator:
@@ -44,7 +56,22 @@ class SignalAggregator:
         signals["price_trend"] = await self._price_trend(db, outcome.id, minutes=60)
         signals["city_lat"] = city_lat
         signals["city_lon"] = city_lon
+        # F2: ensemble spread for confidence interval
+        signals["forecast_std_dev"] = self._compute_forecast_std_dev(signals)
         return signals
+
+    def _compute_forecast_std_dev(self, signals: dict) -> Optional[float]:
+        """Std dev of high-temp forecast across all available sources (F2 uncertainty)."""
+        vals = []
+        for k in _FORECAST_SOURCE_KEYS:
+            v = (signals.get(k) or {}).get("predicted_high_f")
+            if v is not None:
+                vals.append(float(v))
+        if len(vals) < 2:
+            return None
+        mean = sum(vals) / len(vals)
+        variance = sum((v - mean) ** 2 for v in vals) / len(vals)
+        return round(math.sqrt(variance), 2)
 
     async def _latest_metar(self, db, icao):
         result = await db.execute(
@@ -66,6 +93,7 @@ class SignalAggregator:
         }
 
     async def _today_max_temp(self, db, icao: str) -> Optional[float]:
+        """Running maximum °F from METAR obs since UTC midnight."""
         today_start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0
         )

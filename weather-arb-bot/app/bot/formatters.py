@@ -15,7 +15,6 @@ _FORECAST_SOURCE_LABELS = {
 
 
 def _c_bucket_f_label(bucket_label: str) -> str:
-    """Append F-equivalent annotation to a Celsius bucket label for display."""
     if "°C" not in bucket_label:
         return bucket_label
     m = re.search(r'(\d+(?:\.\d+)?)\s*°C\s+or\s+higher', bucket_label, re.IGNORECASE)
@@ -39,9 +38,6 @@ def _c_bucket_f_label(bucket_label: str) -> str:
 
 
 def _fmt_breakdown(breakdown: dict) -> str:
-    """Compact one-line-per-stage representation of the probability breakdown."""
-    if not breakdown:
-        return ""
     stages = breakdown.get("stages") or []
     if not stages:
         return ""
@@ -49,11 +45,7 @@ def _fmt_breakdown(breakdown: dict) -> str:
     for s in stages:
         stage = s.get("stage", "?")
         p = s.get("p")
-        extras = []
-        for k, v in s.items():
-            if k in ("stage", "p"):
-                continue
-            extras.append(f"{k}={v}")
+        extras = [f"{k}={v}" for k, v in s.items() if k not in ("stage", "p")]
         extra_str = (" " + " ".join(extras)) if extras else ""
         lines.append(f"  {stage}: p={p}{extra_str}")
     return "\n".join(lines)
@@ -70,6 +62,14 @@ def fmt_opportunity(
     price_cents = round(display_price * 100)
     date_str = datetime.now(timezone.utc).strftime("%b %d, %Y")
     bucket_display = _c_bucket_f_label(bucket_label)
+
+    # F2: Confidence interval from ensemble spread
+    forecast_std = signals.get("forecast_std_dev")
+    if forecast_std is not None and forecast_std > 0:
+        uncertainty_pp = max(1, round(float(forecast_std) * 3.5))
+        prob_str = f"{prob_pct}% ±{uncertainty_pp}pp"
+    else:
+        prob_str = f"{prob_pct}%"
 
     key_signals = []
 
@@ -110,6 +110,11 @@ def fmt_opportunity(
 
     signals_text = "\n".join(key_signals) if key_signals else "• No key signals available"
 
+    # F3: Why now
+    why_now = signals.get("why_now") or []
+    why_str = f"\n\U0001f4a1 Why now: {', '.join(why_now)}" if why_now else ""
+
+    # Breakdown stages
     breakdown_text = ""
     breakdown = signals.get("probability_breakdown")
     if breakdown:
@@ -131,8 +136,9 @@ def fmt_opportunity(
         f"\U0001f4ca Market: {market_question}\n"
         f"\U0001f3b2 Bucket: {bucket_display} [{side}]\n\n"
         f"\U0001f4b0 Market price: {price_cents}¢ ({side})\n"
-        f"\U0001f9e0 Model estimate: {prob_pct}% P({side})\n"
-        f"\U0001f4c8 Edge: +{edge_pct}pp\n\n"
+        f"\U0001f9e0 Model estimate: {prob_str} P({side})\n"
+        f"\U0001f4c8 Edge: +{edge_pct}pp"
+        f"{why_str}\n\n"
         f"\U0001f50d Key signals:\n{signals_text}"
         f"{breakdown_text}\n\n"
         f"⚠️  Confidence: {confidence}/100"
